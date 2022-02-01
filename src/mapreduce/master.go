@@ -9,6 +9,8 @@ import (
 type WorkerInfo struct {
 	address string
 	// You can add definitions here.
+	status bool
+	jobIdx int
 }
 
 // Clean up all workers by sending a Shutdown RPC to each one of them Collect
@@ -29,30 +31,26 @@ func (mr *MapReduce) KillWorkers() *list.List {
 	return l
 }
 
-//helper function to submit job
-func SendRPC(mr *MapReduce, address string, op string, jobCount int, wg *sync.WaitGroup) error {
-	workerInfo := mr.Workers[address]
+//helper function to send RPC
+func SendRPC(mr *MapReduce, op JobType, workerInfo *WorkerInfo, wg *sync.WaitGroup) error {
 	var otherPhase int
-	var operation JobType
 	switch op {
 	case "Map":
 		otherPhase = mr.nReduce
-		operation = "Map"
 	case "Reduce":
 		otherPhase = mr.nMap
-		operation = "Reduce"
 	}
-	args := &DoJobArgs{
-		File:          mr.file,
-		Operation:     operation,
-		JobNumber:     jobCount,
-		NumOtherPhase: otherPhase}
 
+	args := &DoJobArgs{mr.file, op, workerInfo.jobIdx, otherPhase}
 	var reply DoJobReply
 
-	status := call(workerInfo.address, "Worker.DoJob", args, &reply)
+	ok := call(workerInfo.address, "Worker.DoJob", args, &reply)
+
 	wg.Done() //release
-	if status {
+	workerInfo.status = reply.OK && ok
+	mr.workerResponses <- workerInfo //send response back to detect errors
+
+	if ok && reply.OK {
 		//hand out another job with idle worker address
 		mr.availableWorkers <- workerInfo.address
 	}
@@ -62,10 +60,42 @@ func SendRPC(mr *MapReduce, address string, op string, jobCount int, wg *sync.Wa
 func consumeRegisteredChannels(mr *MapReduce) {
 	for address := range mr.registerChannel {
 		//update Worker map
-		mr.Workers[address] = &WorkerInfo{address}
+		mr.Workers[address] = &WorkerInfo{address, false, -1}
 		//hand out a job
 		mr.availableWorkers <- address
 	}
+}
+
+func SubmitJob(mr *MapReduce, op JobType) {
+	var nJobs int
+	switch op {
+	case "Map":
+		nJobs = mr.nMap
+	case "Reduce":
+		nJobs = mr.nReduce
+	}
+
+	var wg sync.WaitGroup
+	q := list.New() //queue to maintain count of jobs
+	for i := 0; i < nJobs; i++ {
+		q.PushBack(i)
+	}
+	wg.Add(nJobs) //add number of jobs to wait for
+	for q.Len() > 0 {
+		select {
+		case address := <-mr.availableWorkers: //consume an available worker
+			jobIdx := q.Remove(q.Front()).(int)
+			w := mr.Workers[address]
+			w.jobIdx = jobIdx
+			go SendRPC(mr, op, w, &wg) //send RPC as goroutine
+		case workerInfo := <-mr.workerResponses:
+			if !workerInfo.status {
+				q.PushFront(workerInfo.jobIdx) //error, retry
+				wg.Add(1)
+			}
+		}
+	}
+	wg.Wait() //wait for MAP to finish before continuing
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
@@ -73,40 +103,9 @@ func (mr *MapReduce) RunMaster() *list.List {
 	//reference: https://edstem.org/us/courses/19078/discussion/1032883
 	go consumeRegisteredChannels(mr)
 
-	//maintain count of jobs
-	jobCount := 0
-	var mutex sync.Mutex  //use mutex to ensure no race condition
-	var wg sync.WaitGroup //waitgroup for all workers
-
-	//MAP
-	wg.Add(mr.nMap) //add number of map operations to the waitgroup
-	for jobCount < mr.nMap {
-		address := <-mr.availableWorkers              //consume an available worker
-		go SendRPC(mr, address, "Map", jobCount, &wg) //send RPC as goroutine
-		// increment counter in a mutual exclusive lock
-		mutex.Lock()
-		if jobCount < mr.nMap { //foolproof
-			jobCount++
-		}
-		mutex.Unlock()
-	}
-	wg.Wait() //wait for MAP to finish before continuing
-	fmt.Println("Map Operation Completed:", jobCount, "jobs out of", mr.nMap)
-
-	//REDUCE
-	jobCount = 0       //reset job count
-	wg.Add(mr.nReduce) //setup wait groups
-	for jobCount < mr.nReduce {
-		address := <-mr.availableWorkers
-		go SendRPC(mr, address, "Reduce", jobCount, &wg) //send RPC as goroutine
-		mutex.Lock()
-		if jobCount < mr.nReduce {
-			jobCount++
-		}
-		mutex.Unlock()
-	}
-	wg.Wait()
-	fmt.Println("Reduce Operation Completed:", jobCount, "jobs out of", mr.nReduce)
+	//Master doesn't need to differentiate between the two operations
+	SubmitJob(mr, "Map")
+	SubmitJob(mr, "Reduce")
 
 	return mr.KillWorkers()
 }
