@@ -29,12 +29,6 @@ func (mr *MapReduce) KillWorkers() *list.List {
 	return l
 }
 
-// custom struct to easily send back responses
-type WorkerResponse struct {
-	status bool //maintain status of each worker job
-	jobId  int  //the job ID
-}
-
 //helper function to send RPC
 func SendRPC(mr *MapReduce, address string, op JobType, jobId int, wg *sync.WaitGroup) error {
 	var otherPhase int
@@ -52,7 +46,13 @@ func SendRPC(mr *MapReduce, address string, op JobType, jobId int, wg *sync.Wait
 
 	wg.Done() //release
 	//send response back to detect errors
-	mr.workerResponses <- &WorkerResponse{reply.OK && ok, jobId}
+	var e int
+	if !(reply.OK && ok) {
+		e = jobId //resend jobId on failure
+	} else {
+		e = -1
+	}
+	mr.workerError <- e
 
 	if ok && reply.OK {
 		mr.availableWorkers <- address //hand out another job
@@ -61,6 +61,8 @@ func SendRPC(mr *MapReduce, address string, op JobType, jobId int, wg *sync.Wait
 }
 
 func ConsumeRegisteredChannels(mr *MapReduce) {
+	//consume registered workers in a separate goroutine
+	//reference: https://edstem.org/us/courses/19078/discussion/1032883
 	for address := range mr.registerChannel {
 		//update Worker map
 		mr.Workers[address] = &WorkerInfo{address}
@@ -87,13 +89,15 @@ func SubmitJob(mr *MapReduce, op JobType) {
 	wg.Add(nJobs) //add number of jobs to wait for
 
 	for q.Len() > 0 {
+		// use two channels to get return value from a go routine
+		// reference: https://stackoverflow.com/questions/20945069/catching-return-values-from-goroutines
 		select {
 		case address := <-mr.availableWorkers: //consume an available worker
 			jobId := q.Remove(q.Front()).(int)
 			go SendRPC(mr, address, op, jobId, &wg) //send RPC as goroutine
-		case response := <-mr.workerResponses: //consume completed workers
-			if !response.status { //error, retry
-				q.PushFront(response.jobId)
+		case errJobId := <-mr.workerError: //consume completed workers
+			if errJobId >= 0 { //error, retry
+				q.PushFront(errJobId)
 				wg.Add(1)
 			}
 		}
@@ -102,8 +106,6 @@ func SubmitJob(mr *MapReduce, op JobType) {
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
-	//consume registered workers in a separate goroutine
-	//reference: https://edstem.org/us/courses/19078/discussion/1032883
 	go ConsumeRegisteredChannels(mr)
 
 	//Master doesn't need to differentiate between the two operations
