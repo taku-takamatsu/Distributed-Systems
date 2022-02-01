@@ -154,7 +154,7 @@ func TestMove(t *testing.T) {
 
   // insert one key per shard
   for i := 0; i < shardmaster.NShards; i++ {
-    ck.Put(string('0'+i), string('0'+i))
+    ck.Put(string(rune('0'+i)), string(rune('0'+i)))
   }
 
   // add group 1.
@@ -163,7 +163,7 @@ func TestMove(t *testing.T) {
   
   // check that keys are still there.
   for i := 0; i < shardmaster.NShards; i++ {
-    if ck.Get(string('0'+i)) != string('0'+i) {
+    if ck.Get(string(rune('0'+i))) != string(rune('0'+i)) {
       t.Fatalf("missing key/value")
     }
   }
@@ -178,8 +178,8 @@ func TestMove(t *testing.T) {
   for i := 0; i < shardmaster.NShards; i++ {
     go func(me int) {
       myck := MakeClerk(smh)
-      v := myck.Get(string('0'+me))
-      if v == string('0'+me) {
+      v := myck.Get(string(rune('0'+me)))
+      if v == string(rune('0'+me)) {
         mu.Lock()
         count++
         mu.Unlock()
