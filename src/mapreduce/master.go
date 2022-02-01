@@ -9,8 +9,6 @@ import (
 type WorkerInfo struct {
 	address string
 	// You can add definitions here.
-	status bool //maintain status of each worker job
-	jobId  int  //the job ID
 }
 
 // Clean up all workers by sending a Shutdown RPC to each one of them Collect
@@ -31,8 +29,14 @@ func (mr *MapReduce) KillWorkers() *list.List {
 	return l
 }
 
+// custom struct to easily send back responses
+type WorkerResponse struct {
+	status bool //maintain status of each worker job
+	jobId  int  //the job ID
+}
+
 //helper function to send RPC
-func SendRPC(mr *MapReduce, op JobType, workerInfo *WorkerInfo, wg *sync.WaitGroup) error {
+func SendRPC(mr *MapReduce, address string, op JobType, jobId int, wg *sync.WaitGroup) error {
 	var otherPhase int
 	switch op {
 	case "Map":
@@ -41,17 +45,17 @@ func SendRPC(mr *MapReduce, op JobType, workerInfo *WorkerInfo, wg *sync.WaitGro
 		otherPhase = mr.nMap
 	}
 
-	args := &DoJobArgs{mr.file, op, workerInfo.jobId, otherPhase}
+	args := &DoJobArgs{mr.file, op, jobId, otherPhase}
 	var reply DoJobReply
 
-	ok := call(workerInfo.address, "Worker.DoJob", args, &reply)
+	ok := call(address, "Worker.DoJob", args, &reply)
 
 	wg.Done() //release
-	workerInfo.status = reply.OK && ok
-	mr.workerResponses <- workerInfo //send response back to detect errors
+	//send response back to detect errors
+	mr.workerResponses <- &WorkerResponse{reply.OK && ok, jobId}
 
 	if ok && reply.OK {
-		mr.availableWorkers <- workerInfo.address //hand out another job
+		mr.availableWorkers <- address //hand out another job
 	}
 	return nil
 }
@@ -59,7 +63,7 @@ func SendRPC(mr *MapReduce, op JobType, workerInfo *WorkerInfo, wg *sync.WaitGro
 func ConsumeRegisteredChannels(mr *MapReduce) {
 	for address := range mr.registerChannel {
 		//update Worker map
-		mr.Workers[address] = &WorkerInfo{address, false, -1}
+		mr.Workers[address] = &WorkerInfo{address}
 		//hand out a job
 		mr.availableWorkers <- address
 	}
@@ -86,12 +90,10 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		select {
 		case address := <-mr.availableWorkers: //consume an available worker
 			jobId := q.Remove(q.Front()).(int)
-			w := mr.Workers[address]
-			w.jobId = jobId
-			go SendRPC(mr, op, w, &wg) //send RPC as goroutine
-		case workerInfo := <-mr.workerResponses: //consume completed workers
-			if !workerInfo.status { //error, retry
-				q.PushFront(workerInfo.jobId)
+			go SendRPC(mr, address, op, jobId, &wg) //send RPC as goroutine
+		case response := <-mr.workerResponses: //consume completed workers
+			if !response.status { //error, retry
+				q.PushFront(response.jobId)
 				wg.Add(1)
 			}
 		}
