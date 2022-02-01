@@ -53,7 +53,6 @@ func SendRPC(mr *MapReduce, address string, op JobType, jobId int, wg *sync.Wait
 		e = -1
 	}
 	mr.workerError <- e
-
 	if ok && reply.OK {
 		mr.availableWorkers <- address //hand out another job
 	}
@@ -97,8 +96,8 @@ func SubmitJob(mr *MapReduce, op JobType) {
 			go SendRPC(mr, address, op, jobId, &wg) //send RPC as goroutine
 		case errJobId := <-mr.workerError: //consume completed workers
 			if errJobId >= 0 { //error, retry
-				q.PushFront(errJobId)
 				wg.Add(1)
+				q.PushFront(errJobId)
 			}
 		}
 	}
