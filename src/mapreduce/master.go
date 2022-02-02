@@ -57,27 +57,34 @@ func SubmitJob(mr *MapReduce, op JobType) {
 	for i := 0; i < nJobs; i++ {
 		q <- i
 	}
+	var mutex sync.Mutex
+	completed := 0 //maintain count of successful jobs
 
-	var wg sync.WaitGroup //wait for all jobs to complete
-
-	wg.Add(nJobs)
-	for len(q) > 0 { //as long as queue is not empty
-		jobId := <-q                     //get a job from the queue
-		address := <-mr.availableWorkers //consume an available worker
-		go func() {
-			args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
-			var reply DoJobReply
-			ok := call(address, "Worker.DoJob", &args, &reply)
-			wg.Done()
-			if ok && reply.OK {
-				mr.availableWorkers <- address //hand out another job
-			} else {
-				wg.Add(1)  //increment wait
-				q <- jobId //retry; push to queue
+	for { // use inifinite loop that exists when all jobs are completed
+		select {
+		case jobId := <-q: //get a job from the queue
+			go func() {
+				address := <-mr.availableWorkers //consume an available worker
+				args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
+				var reply DoJobReply
+				ok := call(address, "Worker.DoJob", &args, &reply)
+				if ok && reply.OK {
+					mutex.Lock()
+					completed++
+					mutex.Unlock()
+					mr.availableWorkers <- address //hand out another job
+				} else {
+					q <- jobId // retry, push back to queue
+				}
+			}()
+		default:
+			if completed >= nJobs {
+				return
 			}
-		}()
+		}
 	}
-	wg.Wait()
+
+	fmt.Printf("Done with job: %s", op)
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
