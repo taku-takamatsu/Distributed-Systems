@@ -60,7 +60,7 @@ func SubmitJob(mr *MapReduce, op JobType) {
 	var mutex sync.Mutex
 	completed := 0 //maintain count of successful jobs
 
-	for { // use inifinite loop that exists when all jobs are completed
+	for { // use inifinite loop that exits when all jobs are completed
 		select {
 		case jobId := <-q: //get a job from the queue
 			go func() {
