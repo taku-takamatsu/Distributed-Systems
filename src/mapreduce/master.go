@@ -60,21 +60,26 @@ func SubmitJob(mr *MapReduce, op JobType) {
 
 	var wg sync.WaitGroup //wait for all jobs to complete
 
-	for len(q) > 0 { //as long as queue is not empty
-		wg.Add(1)
-		jobId := <-q                     //get a job from the queue
-		address := <-mr.availableWorkers //consume an available worker
-		go func() {
-			args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
-			var reply DoJobReply
-			ok := call(address, "Worker.DoJob", &args, &reply)
-			wg.Done()
-			if ok && reply.OK {
-				mr.availableWorkers <- address //hand out another job
-			} else {
-				q <- jobId //retry; push to queue
-			}
-		}()
+	for {
+		for len(q) > 0 { //as long as queue is not empty
+			wg.Add(1)
+			jobId := <-q                     //get a job from the queue
+			address := <-mr.availableWorkers //consume an available worker
+			go func() {
+				args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
+				var reply DoJobReply
+				ok := call(address, "Worker.DoJob", &args, &reply)
+				wg.Done()
+				if ok && reply.OK {
+					mr.availableWorkers <- address //hand out another job
+				} else {
+					q <- jobId //retry; push to queue
+				}
+			}()
+		}
+		if len(q) == 0 {
+			break
+		}
 	}
 	wg.Wait()
 }
