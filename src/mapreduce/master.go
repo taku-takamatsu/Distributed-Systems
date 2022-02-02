@@ -3,6 +3,7 @@ package mapreduce
 import (
 	"container/list"
 	"fmt"
+	"sync"
 )
 
 type WorkerInfo struct {
@@ -57,25 +58,25 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		q <- i
 	}
 
-	for {
-		address := <-mr.availableWorkers //consume an available worker
-		if len(q) > 0 {                  //as long as queue is not empty
-			jobId := <-q //get a job from the queue
-			go func() {
-				args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
-				var reply DoJobReply
-				ok := call(address, "Worker.DoJob", &args, &reply)
-				if ok && reply.OK {
-					mr.availableWorkers <- address //hand out another job
-				} else {
-					q <- jobId //retry; push to queue
-				}
-			}()
-		} else {
-			break
-		}
-	}
+	var wg sync.WaitGroup //wait for all jobs to complete
 
+	for len(q) > 0 { //as long as queue is not empty
+		wg.Add(1)
+		jobId := <-q                     //get a job from the queue
+		address := <-mr.availableWorkers //consume an available worker
+		go func() {
+			args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
+			var reply DoJobReply
+			ok := call(address, "Worker.DoJob", &args, &reply)
+			wg.Done()
+			if ok && reply.OK {
+				mr.availableWorkers <- address //hand out another job
+			} else {
+				q <- jobId //retry; push to queue
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
