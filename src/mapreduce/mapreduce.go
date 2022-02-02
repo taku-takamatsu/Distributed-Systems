@@ -67,7 +67,6 @@ type MapReduce struct {
 
 	// add any additional state here
 	availableWorkers chan string //keep track of available workers
-	workerError      chan int    //channel to pass responses back
 }
 
 func InitMapReduce(nmap int, nreduce int,
@@ -84,7 +83,6 @@ func InitMapReduce(nmap int, nreduce int,
 	// initialize any additional state here
 	mr.Workers = make(map[string]*WorkerInfo)
 	mr.availableWorkers = make(chan string)
-	mr.workerError = make(chan int)
 	return mr
 }
 
