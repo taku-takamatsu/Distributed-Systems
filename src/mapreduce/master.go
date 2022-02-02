@@ -62,11 +62,11 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		address := <-mr.availableWorkers //consume an available worker
 		if q.Len() > 0 {
 			go func() {
-				mutex.Lock()
 				jobId := q.Remove(q.Front()).(int)
 				args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
 				var reply DoJobReply
 				ok := call(address, "Worker.DoJob", &args, &reply)
+				mutex.Lock()
 				defer mutex.Unlock()
 				if ok && reply.OK {
 					completed++
@@ -76,7 +76,7 @@ func SubmitJob(mr *MapReduce, op JobType) {
 				}
 			}()
 		}
-		if completed == nJobs {
+		if completed >= nJobs {
 			break
 		}
 	}
