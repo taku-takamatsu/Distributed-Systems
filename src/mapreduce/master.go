@@ -57,19 +57,23 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		q <- i
 	}
 
-	for len(q) > 0 { //as long as queue is not empty
+	for {
 		address := <-mr.availableWorkers //consume an available worker
-		jobId := <-q                     //get a job from the queue
-		go func() {
-			args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
-			var reply DoJobReply
-			ok := call(address, "Worker.DoJob", &args, &reply)
-			if ok && reply.OK {
-				mr.availableWorkers <- address //hand out another job
-			} else {
-				q <- jobId //retry; push to queue
-			}
-		}()
+		if len(q) > 0 {                  //as long as queue is not empty
+			jobId := <-q //get a job from the queue
+			go func() {
+				args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
+				var reply DoJobReply
+				ok := call(address, "Worker.DoJob", &args, &reply)
+				if ok && reply.OK {
+					mr.availableWorkers <- address //hand out another job
+				} else {
+					q <- jobId //retry; push to queue
+				}
+			}()
+		} else {
+			break
+		}
 	}
 
 }
