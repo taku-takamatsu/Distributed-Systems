@@ -3,7 +3,6 @@ package mapreduce
 import (
 	"container/list"
 	"fmt"
-	"sync"
 )
 
 type WorkerInfo struct {
@@ -52,38 +51,26 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		nOtherPhase = mr.nMap
 	}
 
-	q := list.New() //queue to maintain count of jobs
+	q := make(chan int, nJobs) //use buffered channel as queue
 	for i := 0; i < nJobs; i++ {
-		q.PushBack(i)
+		q <- i
 	}
-	var mutex sync.Mutex
-	var wg sync.WaitGroup
-	completed := 0
-	wg.Add(nJobs)
-	for {
-		if q.Len() > 0 {
-			address := <-mr.availableWorkers //consume an available worker
-			jobId := q.Remove(q.Front()).(int)
-			go func() {
-				args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
-				var reply DoJobReply
-				ok := call(address, "Worker.DoJob", &args, &reply)
-				wg.Done()
-				mutex.Lock()
-				defer mutex.Unlock()
-				if ok && reply.OK {
-					completed++
-					mr.availableWorkers <- address //hand out another job
-				} else {
-					wg.Add(1)
-					q.PushFront(jobId) //not thread-safe; reference: https://github.com/golang/go/issues/25105
-				}
-			}()
-		} else {
-			break
-		}
+
+	for len(q) > 0 { //as long as q is not empty
+		address := <-mr.availableWorkers //consume an available worker
+		jobId := <-q                     //get a job from the queue
+		go func() {
+			args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
+			var reply DoJobReply
+			ok := call(address, "Worker.DoJob", &args, &reply)
+			if ok && reply.OK {
+				mr.availableWorkers <- address //hand out another job
+			} else {
+				q <- jobId //retry; push to queue
+			}
+		}()
 	}
-	wg.Wait()
+
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
