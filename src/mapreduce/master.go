@@ -57,23 +57,28 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		q.PushBack(i)
 	}
 	var mutex sync.Mutex
-	for q.Len() > 0 {
-		// use two channels to get return value from a go routine
-		// reference: https://stackoverflow.com/questions/20945069/catching-return-values-from-goroutines
+	completed := 0
+	for {
 		address := <-mr.availableWorkers //consume an available worker
-		jobId := q.Remove(q.Front()).(int)
-		go func() {
-			args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
-			var reply DoJobReply
-			ok := call(address, "Worker.DoJob", &args, &reply)
-			mutex.Lock()
-			defer mutex.Unlock()
-			if ok && reply.OK {
-				mr.availableWorkers <- address //hand out another job
-			} else {
-				q.PushFront(jobId) //not thread-safe; reference: https://github.com/golang/go/issues/25105
-			}
-		}()
+		if q.Len() > 0 {
+			go func() {
+				mutex.Lock()
+				jobId := q.Remove(q.Front()).(int)
+				args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
+				var reply DoJobReply
+				ok := call(address, "Worker.DoJob", &args, &reply)
+				defer mutex.Unlock()
+				if ok && reply.OK {
+					completed++
+					mr.availableWorkers <- address //hand out another job
+				} else {
+					q.PushFront(jobId) //not thread-safe; reference: https://github.com/golang/go/issues/25105
+				}
+			}()
+		}
+		if completed == nJobs {
+			break
+		}
 	}
 }
 
