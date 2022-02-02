@@ -52,11 +52,12 @@ func SubmitJob(mr *MapReduce, op JobType) {
 	}
 
 	q := make(chan int, nJobs) //use buffered channel as queue
+	//reference: https://edstem.org/us/courses/19078/discussion/1070461
 	for i := 0; i < nJobs; i++ {
 		q <- i
 	}
 
-	for len(q) > 0 { //as long as q is not empty
+	for len(q) > 0 { //as long as queue is not empty
 		address := <-mr.availableWorkers //consume an available worker
 		jobId := <-q                     //get a job from the queue
 		go func() {
