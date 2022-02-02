@@ -3,7 +3,6 @@ package mapreduce
 import (
 	"container/list"
 	"fmt"
-	"sync"
 )
 
 type WorkerInfo struct {
@@ -30,7 +29,7 @@ func (mr *MapReduce) KillWorkers() *list.List {
 }
 
 //helper function to send RPC
-func SendRPC(mr *MapReduce, address string, op JobType, jobId int, wg *sync.WaitGroup) error {
+func SendRPC(mr *MapReduce, address string, op JobType, jobId int) error {
 	var otherPhase int
 	switch op {
 	case "Map":
@@ -44,7 +43,6 @@ func SendRPC(mr *MapReduce, address string, op JobType, jobId int, wg *sync.Wait
 
 	ok := call(address, "Worker.DoJob", args, &reply)
 
-	wg.Done() //release
 	//send response back to detect errors
 	var e int
 	if !(reply.OK && ok) {
@@ -53,6 +51,7 @@ func SendRPC(mr *MapReduce, address string, op JobType, jobId int, wg *sync.Wait
 		e = -1
 	}
 	mr.workerError <- e
+
 	if ok && reply.OK {
 		mr.availableWorkers <- address //hand out another job
 	}
@@ -79,13 +78,13 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		nJobs = mr.nReduce
 	}
 
-	var wg sync.WaitGroup
+	// var wg sync.WaitGroup
 
 	q := list.New() //queue to maintain count of jobs
 	for i := 0; i < nJobs; i++ {
 		q.PushBack(i)
 	}
-	wg.Add(nJobs) //add number of jobs to wait for
+	// wg.Add(nJobs) //add number of jobs to wait for
 
 	for q.Len() > 0 {
 		// use two channels to get return value from a go routine
@@ -93,15 +92,15 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		select {
 		case address := <-mr.availableWorkers: //consume an available worker
 			jobId := q.Remove(q.Front()).(int)
-			go SendRPC(mr, address, op, jobId, &wg) //send RPC as goroutine
+			go SendRPC(mr, address, op, jobId) //send RPC as goroutine
 		case errJobId := <-mr.workerError: //consume completed workers
 			if errJobId >= 0 { //error, retry
-				wg.Add(1)
+				//wg.Add(1)
 				q.PushFront(errJobId)
 			}
 		}
 	}
-	wg.Wait() //wait for all go routines to finish
+	// wg.Wait() //wait for all go routines to finish
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
