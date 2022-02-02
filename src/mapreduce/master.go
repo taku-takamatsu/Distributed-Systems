@@ -66,12 +66,12 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		var reply DoJobReply
 		go func() {
 			ok := call(address, "Worker.DoJob", &args, &reply)
+			mutex.Lock()
+			defer mutex.Unlock()
 			if ok && reply.OK {
 				mr.availableWorkers <- address //hand out another job
 			} else {
-				mutex.Lock()
 				q.PushFront(jobId) //not thread-safe; reference: https://github.com/golang/go/issues/25105
-				mutex.Unlock()
 			}
 		}()
 	}
