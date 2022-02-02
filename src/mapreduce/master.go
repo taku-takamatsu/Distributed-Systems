@@ -57,23 +57,27 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		q.PushBack(i)
 	}
 	var mutex sync.Mutex
-	for q.Len() > 0 {
-		address := <-mr.availableWorkers //consume an available worker
-		jobId := q.Remove(q.Front()).(int)
-		go func() {
-			args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
-			var reply DoJobReply
-			ok := call(address, "Worker.DoJob", &args, &reply)
-			mutex.Lock()
-			defer mutex.Unlock()
-			if ok && reply.OK {
-				mr.availableWorkers <- address //hand out another job
-			} else {
-				q.PushFront(jobId) //not thread-safe; reference: https://github.com/golang/go/issues/25105
-			}
-		}()
-	}
+	for {
+		if q.Len() > 0 {
+			address := <-mr.availableWorkers //consume an available worker
+			jobId := q.Remove(q.Front()).(int)
+			go func() {
+				args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
+				var reply DoJobReply
+				ok := call(address, "Worker.DoJob", &args, &reply)
+				mutex.Lock()
+				defer mutex.Unlock()
+				if ok && reply.OK {
+					mr.availableWorkers <- address //hand out another job
+				} else {
+					q.PushFront(jobId) //not thread-safe; reference: https://github.com/golang/go/issues/25105
+				}
+			}()
+		} else {
+			break
+		}
 
+	}
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
