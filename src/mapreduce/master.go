@@ -62,9 +62,9 @@ func SubmitJob(mr *MapReduce, op JobType) {
 		// reference: https://stackoverflow.com/questions/20945069/catching-return-values-from-goroutines
 		address := <-mr.availableWorkers //consume an available worker
 		jobId := q.Remove(q.Front()).(int)
-		args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
-		var reply DoJobReply
 		go func() {
+			args := DoJobArgs{mr.file, op, jobId, nOtherPhase}
+			var reply DoJobReply
 			ok := call(address, "Worker.DoJob", &args, &reply)
 			mutex.Lock()
 			defer mutex.Unlock()
