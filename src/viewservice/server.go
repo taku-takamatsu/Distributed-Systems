@@ -42,38 +42,29 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 	address := args.Me
 	viewNum := args.Viewnum
 
-	fmt.Println("Ping:", address, viewNum)
+	//fmt.Println("Ping:", address, viewNum)
 	vs.servers[address] = time.Now() //update time
 
 	// Ping(0): new/restarted server
 	if viewNum == 0 {
-		if vs.currentView.Primary == "" { // First primary
-			fmt.Println("Setting primary")
+		if vs.currentView.Primary == "" { // Set primary
 			vs.NewView(address, "")
-		} else if vs.currentView.Backup == "" { // First backup
-			fmt.Println("Setting backup")
+		} else if vs.currentView.Backup == "" { // Set backup
 			vs.NewView(vs.currentView.Primary, address)
-		} else if vs.currentView.Primary == address { //Primary crashed, restarted
-			fmt.Println("Primary crashed and restarted")
+		} else if vs.currentView.Primary == address {
 			//primary crashed, promote backup and set old primary as new backup
 			// Reference: https://edstem.org/us/courses/19078/discussion/1101378
 			if vs.primaryAcked { // only update View if Acked
 				vs.NewView(vs.currentView.Backup, address)
 			}
-			fmt.Println("Promoted Backup:", vs.currentView.Primary, vs.currentView.Backup)
 		} else if vs.currentView.Primary != address && vs.currentView.Backup != address {
 			// primary and backup filled, insert new server to idle channel
-			fmt.Println("Idle server")
 			go func() { vs.idle <- address }()
 		}
 	} else if viewNum == vs.currentView.Viewnum && vs.currentView.Primary == address {
-		//acked
-		fmt.Println(viewNum, "ACKED")
-		vs.primaryAcked = true
+		vs.primaryAcked = true //Acked
 	}
-
 	reply.View = vs.currentView
-	fmt.Println("REPLY:", reply.View.Primary, reply.View.Backup, reply.View.Viewnum)
 	return nil
 }
 
@@ -88,6 +79,19 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 	return nil
 }
 
+func (vs *ViewServer) getIdle() string {
+	select {
+	case idle := <-vs.idle:
+		if idle != vs.currentView.Backup && idle != vs.currentView.Primary {
+			return idle
+		}
+	default:
+		//if no idle and backup dead -> delete the timestamp
+		delete(vs.servers, vs.currentView.Backup)
+	}
+	return ""
+}
+
 //
 // tick() is called once per PingInterval; it should notice
 // if servers have died or recovered, and change the view
@@ -98,43 +102,16 @@ func (vs *ViewServer) tick() {
 	defer vs.mu.Unlock()
 	latestPrimaryTime := vs.servers[vs.currentView.Primary]
 	if vs.primaryAcked && latestPrimaryTime.Before(time.Now().Add(time.Duration(-PingInterval)*DeadPings)) {
-		fmt.Println("PRIMARY DEAD", vs.currentView.Primary, vs.currentView.Viewnum)
-		//promote backup to primary - akin to New View
-		vs.NewView(vs.currentView.Backup, "")
-		vs.servers[vs.currentView.Primary] = time.Now() // update time
-
-		select {
-		case idle := <-vs.idle:
-			if idle != vs.currentView.Backup && idle != vs.currentView.Primary {
-				fmt.Println("Pulling from idle server")
-				vs.currentView.Backup = idle
-				vs.servers[vs.currentView.Backup] = time.Now()
-			}
-		default:
-			delete(vs.servers, vs.currentView.Backup) // delete time
-			vs.currentView.Backup = ""
-
-			fmt.Println("Promoting Backup to Primary", vs.currentView.Viewnum, vs.currentView.Primary, vs.currentView.Backup)
-		}
+		//fmt.Println("PRIMARY DEAD", vs.currentView.Primary, vs.currentView.Viewnum)
+		idle := vs.getIdle()                    //get Idle if exists
+		vs.NewView(vs.currentView.Backup, idle) //promote backup to primary - akin to New View
 	}
 	latestBackupTime, exist := vs.servers[vs.currentView.Backup]
 	// Promoting backup is akin to setting up new View -- we can't do this until primary is acked
 	if exist && vs.primaryAcked && latestBackupTime.Before(time.Now().Add(time.Duration(-PingInterval)*DeadPings)) {
-		fmt.Println("BACKUP DEAD", vs.currentView.Backup, vs.currentView.Viewnum)
-		select {
-		case idle := <-vs.idle:
-			if idle != vs.currentView.Backup && idle != vs.currentView.Primary {
-				fmt.Println("Pulling from idle server")
-				vs.currentView.Backup = idle
-				vs.servers[vs.currentView.Backup] = time.Now()
-			}
-		default:
-			delete(vs.servers, vs.currentView.Backup) // delete time
-			vs.currentView.Backup = ""
-
-			fmt.Println("Promoting Idle to Backup", vs.currentView.Viewnum, vs.currentView.Primary, vs.currentView.Backup)
-		}
-		vs.primaryAcked = false
+		//fmt.Println("BACKUP DEAD", vs.currentView.Backup, vs.currentView.Viewnum)
+		idle := vs.getIdle()
+		vs.NewView(vs.currentView.Primary, idle) //promote idle to backup
 	}
 }
 
