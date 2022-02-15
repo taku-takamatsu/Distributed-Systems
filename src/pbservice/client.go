@@ -1,30 +1,29 @@
 package pbservice
 
-import "viewservice"
-import "net/rpc"
-import "fmt"
+import (
+	"fmt"
+	"net/rpc"
+	"time"
+	"viewservice"
+)
 
 // You'll probably need to uncomment these:
-// import "time"
+
 // import "crypto/rand"
 // import "math/big"
 
-
-
 type Clerk struct {
-  vs *viewservice.Clerk
-  // Your declarations here
+	vs *viewservice.Clerk
+	// Your declarations here
 }
-
 
 func MakeClerk(vshost string, me string) *Clerk {
-  ck := new(Clerk)
-  ck.vs = viewservice.MakeClerk(me, vshost)
-  // Your ck.* initializations here
+	ck := new(Clerk)
+	ck.vs = viewservice.MakeClerk(me, vshost)
+	// Your ck.* initializations here
 
-  return ck
+	return ck
 }
-
 
 //
 // call() sends an RPC to the rpcname handler on server srv
@@ -43,20 +42,20 @@ func MakeClerk(vshost string, me string) *Clerk {
 // please don't change this function.
 //
 func call(srv string, rpcname string,
-          args interface{}, reply interface{}) bool {
-  c, errx := rpc.Dial("unix", srv)
-  if errx != nil {
-    return false
-  }
-  defer c.Close()
-    
-  err := c.Call(rpcname, args, reply)
-  if err == nil {
-    return true
-  }
+	args interface{}, reply interface{}) bool {
+	c, errx := rpc.Dial("unix", srv)
+	if errx != nil {
+		return false
+	}
+	defer c.Close()
 
-  fmt.Println(err)
-  return false
+	err := c.Call(rpcname, args, reply)
+	if err == nil {
+		return true
+	}
+
+	fmt.Println(err)
+	return false
 }
 
 //
@@ -67,10 +66,21 @@ func call(srv string, rpcname string,
 // says the key doesn't exist (has never been Put().
 //
 func (ck *Clerk) Get(key string) string {
-
-  // Your code here.
-
-  return "???"
+	//get primary
+	view, _ := ck.vs.Get()
+	args := GetArgs{key} // only Key
+	var reply GetReply
+	fmt.Println("Preparing Get", view.Primary, args)
+	ok := call(view.Primary, "PBServer.Get", args, &reply)
+	for !ok || reply.Err != OK {
+		fmt.Println("Error calling GET", reply)
+		// try again
+		time.Sleep(viewservice.PingInterval)
+		view, _ = ck.vs.Get()
+		ok = call(view.Primary, "PBServer.Get", args, &reply)
+	}
+	fmt.Println("GET REQUEST:", key, reply.Value)
+	return reply.Value
 }
 
 //
@@ -78,15 +88,22 @@ func (ck *Clerk) Get(key string) string {
 // must keep trying until it succeeds.
 //
 func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
-
-  // Your code here.
-  return "???"
+	fmt.Println("PUT REQUEST:", key, value)
+	view, _ := ck.vs.Get()
+	//fmt.Println("Current View:", view)
+	args := PutArgs{key, value, dohash}
+	var reply PutReply
+	call(view.Primary, "PBServer.Put", args, &reply)
+	if reply.Err != OK {
+		fmt.Println("Error calling PUT", reply.Err)
+	}
+	return "???"
 }
 
 func (ck *Clerk) Put(key string, value string) {
-  ck.PutExt(key, value, false)
+	ck.PutExt(key, value, false)
 }
 func (ck *Clerk) PutHash(key string, value string) string {
-  v := ck.PutExt(key, value, true)
-  return v
+	v := ck.PutExt(key, value, true)
+	return v
 }
