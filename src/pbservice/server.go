@@ -7,13 +7,12 @@ import (
 	"net"
 	"net/rpc"
 	"os"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 	"viewservice"
 )
-
-//import "strconv"
 
 // Debugging
 const Debug = 0
@@ -35,6 +34,7 @@ type PBServer struct {
 	finish     chan interface{}
 	// Your declarations here.
 	data     map[string]string
+	state    map[int64]string // state[xid] acting to remember duplicates calls
 	currView viewservice.View
 	mu       sync.Mutex
 }
@@ -52,22 +52,48 @@ func (pb *PBServer) Sync(args *SyncArgs, reply *SyncReply) error {
 	return nil
 }
 
+// TODO: backup doesn't run, needs separate function?
+
 func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
+	fmt.Println("Server - PUT received", args)
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
-	// fmt.Println("PutArgs:", args)
-	pb.data[args.Key] = args.Value
-	// replicate to BACKUP
-	if pb.me == pb.currView.Primary && pb.currView.Backup != "" {
-		fmt.Println("Replicating..", pb.me)
-		args := PutArgs{args.Key, args.Value, args.DoHash}
-		var reply PutReply
-		ok := call(pb.currView.Backup, "PBServer.Put", args, &reply)
-		if !ok || reply.Err != OK {
-			fmt.Println("Error replicating ")
-		}
-	}
+
 	reply.Err = OK
+
+	if pb.me == pb.currView.Primary {
+		prevVal := pb.data[args.Key] // if not exist, evalutes to "" (zero value of type)
+		fmt.Println("Previous value:", prevVal)
+
+		if pb.state[args.Id] == DONE {
+			fmt.Println("Server - PUT duplicate found")
+			reply.PreviousValue = prevVal
+			return nil
+		}
+		// check for old value
+		if args.DoHash {
+			// convert uint32 -> string
+			args.Value = strconv.Itoa(int(hash(prevVal + args.Value)))
+			reply.PreviousValue = prevVal
+		}
+
+		pb.data[args.Key] = args.Value
+		// replicate to BACKUP
+		if pb.currView.Backup != "" {
+			// replicate to backup
+			fmt.Println("Replicating..", pb.me)
+			args := PutArgs{args.Key, args.Value, args.DoHash, args.Id}
+			var reply PutReply
+			ok := call(pb.currView.Backup, "PBServer.Put", args, &reply)
+			if !ok || reply.Err != OK {
+				fmt.Println("Error replicating ")
+			}
+		}
+		pb.state[args.Id] = DONE
+	} else {
+		reply.Err = ErrWrongServer
+	}
+
 	return nil
 }
 
@@ -142,6 +168,7 @@ func StartServer(vshost string, me string) *PBServer {
 	pb.finish = make(chan interface{})
 	// Your pb.* initializations here.
 	pb.data = make(map[string]string)
+	pb.state = make(map[int64]string)
 	pb.currView = viewservice.View{}
 
 	rpcs := rpc.NewServer()

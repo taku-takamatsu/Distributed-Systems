@@ -1,7 +1,9 @@
 package pbservice
 
 import (
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"net/rpc"
 	"time"
 	"viewservice"
@@ -9,19 +11,25 @@ import (
 
 // You'll probably need to uncomment these:
 
-// import "crypto/rand"
-// import "math/big"
+// Function to generate numbers with high probability of being unique
+func nrand() int64 {
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := rand.Int(rand.Reader, max)
+	x := bigx.Int64()
+	return x
+}
 
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
+	primary string
 }
 
 func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
-
+	ck.primary = ck.vs.Primary() // client should never contact VS unless needed
 	return ck
 }
 
@@ -66,20 +74,23 @@ func call(srv string, rpcname string,
 // says the key doesn't exist (has never been Put().
 //
 func (ck *Clerk) Get(key string) string {
-	//get primary
-	view, _ := ck.vs.Get()
-	args := GetArgs{key} // only Key
-	var reply GetReply
-	fmt.Println("Preparing Get", view.Primary, args)
-	ok := call(view.Primary, "PBServer.Get", args, &reply)
-	for !ok || reply.Err != OK {
+	//get primary if not set
+	if ck.primary == "" {
+		ck.primary = ck.vs.Primary()
+	}
+	args := &GetArgs{key, nrand()} // only Key
+	reply := GetReply{}
+	ok := call(ck.primary, "PBServer.Get", args, &reply)
+	// keep trying if we get an error
+	for (reply.Err != OK || !ok) && ck.primary != "" {
 		fmt.Println("Error calling GET", reply)
 		// try again
 		time.Sleep(viewservice.PingInterval)
-		view, _ = ck.vs.Get()
-		ok = call(view.Primary, "PBServer.Get", args, &reply)
+		reply = GetReply{}
+		ck.primary = ck.vs.Primary() // reassign from VS
+		ok = call(ck.primary, "PBServer.Get", args, &reply)
 	}
-	fmt.Println("GET REQUEST:", key, reply.Value)
+	fmt.Println("GET success:", key, reply.Value)
 	return reply.Value
 }
 
@@ -88,16 +99,23 @@ func (ck *Clerk) Get(key string) string {
 // must keep trying until it succeeds.
 //
 func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
-	fmt.Println("PUT REQUEST:", key, value)
-	view, _ := ck.vs.Get()
-	//fmt.Println("Current View:", view)
-	args := PutArgs{key, value, dohash}
-	var reply PutReply
-	call(view.Primary, "PBServer.Put", args, &reply)
-	if reply.Err != OK {
-		fmt.Println("Error calling PUT", reply.Err)
+	if ck.primary == "" {
+		ck.primary = ck.vs.Primary()
 	}
-	return "???"
+	args := &PutArgs{key, value, dohash, nrand()}
+	reply := PutReply{}
+
+	ok := call(ck.primary, "PBServer.Put", args, &reply)
+	for (reply.Err != OK || !ok) && ck.primary != "" {
+		// try again after Ping Interval
+		fmt.Println("Error calling PUT", reply)
+		time.Sleep(viewservice.PingInterval)
+		reply = PutReply{}
+		ck.primary = ck.vs.Primary() // re-assign on error
+		ok = call(ck.primary, "PBServer.Put", args, &reply)
+	}
+	fmt.Println("PUT success:", key, value)
+	return reply.PreviousValue // only used by PutHash
 }
 
 func (ck *Clerk) Put(key string, value string) {
