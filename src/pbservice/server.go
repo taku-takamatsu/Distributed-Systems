@@ -52,48 +52,48 @@ func (pb *PBServer) Sync(args *SyncArgs, reply *SyncReply) error {
 	return nil
 }
 
-// TODO: backup doesn't run, needs separate function?
-
 func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
-	fmt.Println("Server - PUT received", args)
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
+	fmt.Println("Server - PUT received", args)
+	id := args.Id
+	key := args.Key
+	value := args.Value
 
-	reply.Err = OK
+	prevVal := pb.data[key] // if not exist, evalutes to "" (zero value of type)
+	fmt.Println("Previous value:", prevVal)
 
-	if pb.me == pb.currView.Primary {
-		prevVal := pb.data[args.Key] // if not exist, evalutes to "" (zero value of type)
-		fmt.Println("Previous value:", prevVal)
-
-		if pb.state[args.Id] == DONE {
-			fmt.Println("Server - PUT duplicate found")
-			reply.PreviousValue = prevVal
-			return nil
-		}
-		// check for old value
-		if args.DoHash {
-			// convert uint32 -> string
-			args.Value = strconv.Itoa(int(hash(prevVal + args.Value)))
-			reply.PreviousValue = prevVal
-		}
-
-		pb.data[args.Key] = args.Value
-		// replicate to BACKUP
-		if pb.currView.Backup != "" {
-			// replicate to backup
-			fmt.Println("Replicating..", pb.me)
-			args := PutArgs{args.Key, args.Value, args.DoHash, args.Id}
-			var reply PutReply
-			ok := call(pb.currView.Backup, "PBServer.Put", args, &reply)
-			if !ok || reply.Err != OK {
-				fmt.Println("Error replicating ")
-			}
-		}
-		pb.state[args.Id] = DONE
-	} else {
-		reply.Err = ErrWrongServer
+	if pb.state[id] != "" { // duplicate request
+		fmt.Println("Server - PUT duplicate found on server:", pb.me)
+		reply.PreviousValue = pb.state[id]
+		reply.Err = OK
+		return nil
 	}
 
+	if args.DoHash {
+		fmt.Println("Hashing")
+		value = strconv.Itoa(int(hash(prevVal + value)))
+		fmt.Println("Hashed", value, "Previous value:", prevVal)
+		reply.PreviousValue = prevVal
+	}
+
+	pb.data[key] = value // set value
+
+	// replicate to BACKUP
+	if pb.currView.Primary == pb.me && pb.currView.Backup != "" {
+		fmt.Println("Replicating PUT to backup", pb.me)
+		args := PutArgs{key, value, args.DoHash, id}
+		var backupReply PutReply
+		ok := call(pb.currView.Backup, "PBServer.Put", args, &backupReply)
+		if !ok || backupReply.Err != OK {
+			fmt.Println("Error replicating ")
+			reply.Err = "Error replicating PUT operation to Backup"
+			return nil
+		}
+	}
+	reply.Err = OK
+	pb.state[id] = prevVal
+	fmt.Println("SERVER: Finished PUT", reply, pb.data[key])
 	return nil
 }
 
@@ -126,7 +126,6 @@ func (pb *PBServer) tick() {
 	pb.mu.Lock() // threaded function
 	defer pb.mu.Unlock()
 	view, _ := pb.vs.Ping(pb.currView.Viewnum)
-
 	if view.Viewnum != pb.currView.Viewnum { // New View
 		fmt.Println("New View", view.Viewnum, view.Primary, view.Backup)
 		// if new backup, replicate primary key values

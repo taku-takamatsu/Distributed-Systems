@@ -58,6 +58,7 @@ func call(srv string, rpcname string,
 	defer c.Close()
 
 	err := c.Call(rpcname, args, reply)
+
 	if err == nil {
 		return true
 	}
@@ -78,7 +79,7 @@ func (ck *Clerk) Get(key string) string {
 	if ck.primary == "" {
 		ck.primary = ck.vs.Primary()
 	}
-	args := &GetArgs{key, nrand()} // only Key
+	args := &GetArgs{key, nrand()} // Key and Id
 	reply := GetReply{}
 	ok := call(ck.primary, "PBServer.Get", args, &reply)
 	// keep trying if we get an error
@@ -100,21 +101,21 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
 	if ck.primary == "" {
+		fmt.Println("Getting primary:", ck.primary)
 		ck.primary = ck.vs.Primary()
 	}
 	args := &PutArgs{key, value, dohash, nrand()}
 	reply := PutReply{}
-
 	ok := call(ck.primary, "PBServer.Put", args, &reply)
 	for (reply.Err != OK || !ok) && ck.primary != "" {
 		// try again after Ping Interval
-		fmt.Println("Error calling PUT", reply)
+		fmt.Println("Error calling PUT", reply, "retrying...")
 		time.Sleep(viewservice.PingInterval)
 		reply = PutReply{}
 		ck.primary = ck.vs.Primary() // re-assign on error
 		ok = call(ck.primary, "PBServer.Put", args, &reply)
 	}
-	fmt.Println("PUT success:", key, value)
+	fmt.Println("PUT success: k:", key, "v:", value)
 	return reply.PreviousValue // only used by PutHash
 }
 
