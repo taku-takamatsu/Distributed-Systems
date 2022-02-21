@@ -83,7 +83,7 @@ func (ck *Clerk) Get(key string) string {
 	// keep trying if we get an error
 	// if reply.Err not ErrNoKey or OK...
 	for !ok || ck.primary == "" || reply.Err == ErrWrongServer {
-		fmt.Println("CLIENT: Error calling GET", reply, "primary:", ck.primary)
+		// fmt.Println("CLIENT: Error calling GET", reply, "primary:", ck.primary)
 		// try again
 		time.Sleep(viewservice.PingInterval)
 		reply = GetReply{}
@@ -91,7 +91,7 @@ func (ck *Clerk) Get(key string) string {
 		ok = call(ck.primary, "PBServer.Get", args, &reply)
 	}
 	if reply.Err == ErrNoKey {
-		fmt.Println("CLIENT: Reply no key:", reply.Value)
+		// fmt.Println("CLIENT: Reply no key:", reply.Value)
 		return ""
 	}
 	// fmt.Println("CLIENT: GET success with key:", key, "value:", reply.Value)
@@ -109,7 +109,7 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
 	ok := call(ck.primary, "PBServer.Put", args, &reply)
 	for reply.Err != OK || !ok || ck.primary == "" {
 		// try again after Ping Interval
-		fmt.Println("CLIENT: Error calling PUT - reply", reply, "ok:", ok, "retrying...")
+		// fmt.Println("CLIENT: Error calling PUT - reply", reply, "ok:", ok, "retrying...")
 		time.Sleep(viewservice.PingInterval)
 		reply = PutReply{}
 		ck.primary = ck.vs.Primary() // re-assign on error
