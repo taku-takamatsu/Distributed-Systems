@@ -1,6 +1,7 @@
 package pbservice
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -12,6 +13,8 @@ import (
 	"syscall"
 	"time"
 	"viewservice"
+
+	"github.com/sasha-s/go-deadlock"
 )
 
 // Debugging
@@ -34,90 +37,188 @@ type PBServer struct {
 	finish     chan interface{}
 	// Your declarations here.
 	data     map[string]string
-	state    map[int64]string // state[xid] acting to remember duplicates calls
+	putState map[int64]*PutState // putState[xid] to remember duplicate PUT calls
+	getState map[int64]*GetState // getState[xid] to remember duplicate GET calls
 	currView viewservice.View
-	mu       sync.Mutex
+	mu       deadlock.Mutex
 }
 
 func (pb *PBServer) Sync(args *SyncArgs, reply *SyncReply) error {
 	// handle transfer of complete key/value database from primary to backup
-	fmt.Println("Syncing..")
+	// make sure p/b are in sync
+	log.Println("Server: Syncing..")
+	// pb.mu.Lock()
 	for k, v := range args.Data {
-		_, exist := pb.data[k]
-		if !exist {
-			pb.data[k] = v
-		}
+		pb.data[k] = v
 	}
+	for k, v := range args.PutState {
+		pb.putState[k] = &PutState{v.Value, v.Err}
+	}
+	for k, v := range args.GetState {
+		pb.getState[k] = &GetState{v.Value, v.Err}
+	}
+	// pb.mu.Unlock()
 	reply.Err = OK
+	log.Println("Server: sync Complete;", reply.Err)
+	return nil
+}
+
+func (pb *PBServer) PutBackup(args *PutBackupArgs, reply *PutBackupReply) error {
+	//handle client PUT requests from primary to backup
+	// maintain state in backup as well
+	pb.mu.Lock()
+	log.Println("SERVER: (Backup) PUT received", args)
+
+	if pb.currView.Backup != pb.me {
+		reply.Err = ErrWrongServer
+		pb.mu.Unlock()
+		return errors.New("SERVER: (Backup) PUT ErrWrongServer")
+	}
+
+	id := args.Id
+	key := args.Key
+	value := args.Value
+
+	prevVal := pb.data[key] // if not exist, evalutes to "" (zero value of string type)
+	pb.data[key] = value    // set value
+	reply.Err = OK
+	pb.putState[id] = &PutState{prevVal, reply.Err}
+	log.Println("SERVER: (Backup) Finished PUT - addr;", pb.me, "id;", id, "key;", key, "value;", pb.data[key])
+	pb.mu.Unlock()
 	return nil
 }
 
 func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 	pb.mu.Lock()
-	defer pb.mu.Unlock()
-	fmt.Println("Server - PUT received", args)
+	log.Println("SERVER: (Primary) PUT received", args, "p:", pb.me)
+
+	if pb.currView.Primary != pb.me { // wrong server
+		reply.Err = ErrWrongServer
+		pb.mu.Unlock() //releasing locks early on error ref: Ed
+		return errors.New("SERVER: (Primary) PUT ErrWrongServer")
+	}
+
 	id := args.Id
 	key := args.Key
 	value := args.Value
 
-	prevVal := pb.data[key] // if not exist, evalutes to "" (zero value of type)
-	fmt.Println("Previous value:", prevVal)
-
-	if pb.state[id] != "" { // duplicate request
-		fmt.Println("Server - PUT duplicate found on server:", pb.me)
-		reply.PreviousValue = pb.state[id]
-		reply.Err = OK
+	//handle duplicates; at-most-once semantic
+	prevState, e := pb.putState[id]
+	if e {
+		log.Println("SERVER: (Primary) Duplicate PUT request - ID:", args.Id, "previous value:", prevState)
+		reply.PreviousValue = prevState.Value
+		reply.Err = prevState.Err
+		pb.mu.Unlock()
 		return nil
 	}
 
+	//putHash()
+	prevVal := pb.data[key] // if not exist, evalutes to "" (zero value of type)
 	if args.DoHash {
-		fmt.Println("Hashing")
 		value = strconv.Itoa(int(hash(prevVal + value)))
-		fmt.Println("Hashed", value, "Previous value:", prevVal)
-		reply.PreviousValue = prevVal
+	}
+
+	// try replicate to backup
+	if pb.currView.Backup != "" {
+		backupArgs := &PutBackupArgs{key, value, args.DoHash, id}
+		backupReply := PutBackupReply{}
+
+		log.Println("SERVER: Replicating to backup;", pb.currView.Backup, "id:", id)
+		ok := call(pb.currView.Backup, "PBServer.PutBackup", backupArgs, &backupReply)
+		if !ok || backupReply.Err != OK { // error replicating, then return false to retry
+			reply.Err = backupReply.Err
+			pb.mu.Unlock()
+			log.Println("SERVER: (Primary) Error replicating to backup", backupReply)
+			return errors.New("SERVER: (Primary) Error replicating to backup")
+		}
+		log.Println("SERVER: Replicated to backup;", backupReply)
 	}
 
 	pb.data[key] = value // set value
-
-	// replicate to BACKUP
-	if pb.currView.Primary == pb.me && pb.currView.Backup != "" {
-		fmt.Println("Replicating PUT to backup", pb.me)
-		args := PutArgs{key, value, args.DoHash, id}
-		var backupReply PutReply
-		ok := call(pb.currView.Backup, "PBServer.Put", args, &backupReply)
-		if !ok || backupReply.Err != OK {
-			fmt.Println("Error replicating ")
-			reply.Err = "Error replicating PUT operation to Backup"
-			return nil
-		}
-	}
+	reply.PreviousValue = prevVal
 	reply.Err = OK
-	pb.state[id] = prevVal
-	fmt.Println("SERVER: Finished PUT", reply, pb.data[key])
+	pb.putState[id] = &PutState{prevVal, reply.Err}
+	log.Println("SERVER: (Primary) Finished PUT - addr;", pb.me, "id;", id, "key;", key, "value;", pb.data[key])
+	pb.mu.Unlock()
+
+	return nil
+}
+
+func (pb *PBServer) GetBackup(args *GetBackupArgs, reply *GetBackupReply) error {
+	pb.mu.Lock()
+	// log.Println("SERVER: (Backup) GET received - key:", args.Key, "with id:", args.Id)
+	if pb.currView.Backup != pb.me {
+		reply.Err = ErrWrongServer
+		pb.mu.Unlock()
+		return errors.New("SERVER: (Backup) GET ErrWrongServer")
+	}
+
+	key := args.Key
+	id := args.Id
+
+	v, exist := pb.data[key]
+	if !exist {
+		reply.Value = ""
+		reply.Err = ErrNoKey
+	} else {
+		reply.Value = v
+		reply.Err = OK
+	}
+	pb.getState[id] = &GetState{reply.Value, reply.Err}
+	pb.mu.Unlock()
 	return nil
 }
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
-	fmt.Println("Server - GET received")
 	pb.mu.Lock()
-	defer pb.mu.Unlock()
-	if pb.me != pb.currView.Primary {
-		fmt.Println("GET ERROR: Wrong Server")
+	// log.Println("SERVER: (Primary) GET received - key:", args.Key, "with id:", args.Id)
+
+	if pb.currView.Primary != pb.me {
 		reply.Err = ErrWrongServer
+		pb.mu.Unlock()
+		return errors.New("SERVER: (Primary) GET ErrWrongServer")
+	}
+
+	key := args.Key
+	id := args.Id
+
+	prevState, e := pb.getState[id]
+	if e {
+		// log.Println("SERVER: (Primary) Duplicate GET request - ID;", args.Id, "key;", key, "value:", pb.getState[id])
+		reply.Value = prevState.Value
+		reply.Err = prevState.Err
+		pb.mu.Unlock()
 		return nil
 	}
-	if args.Key == "" {
-		fmt.Println("GET ERROR: No key")
-		reply.Err = ErrNoKey
-		return nil
+
+	v, exist := pb.data[key]
+
+	// send request to BACKUP
+	if pb.currView.Backup != "" {
+		// log.Println("SERVER: Retrieveing GET from backup - key:", key)
+		backupArgs := GetBackupArgs{key, id}
+		backupReply := GetBackupReply{}
+		ok := call(pb.currView.Backup, "PBServer.GetBackup", backupArgs, &backupReply)
+		if !ok || backupReply.Value != v { // backup may have switched to primary or died
+			reply.Err = backupReply.Err
+			log.Println("SERVER: (Primary) error - ", backupReply.Err)
+			pb.mu.Unlock()
+			return errors.New("SERVER: (Primary) GET Backup Failure")
+		}
 	}
-	v, ok := pb.data[args.Key]
-	if !ok {
+
+	if !exist {
 		reply.Value = ""
+		reply.Err = ErrNoKey
+		log.Println("SERVER: GET ERROR - No key")
 	} else {
 		reply.Value = v
+		reply.Err = OK
 	}
-	reply.Err = OK
+	pb.getState[id] = &GetState{reply.Value, reply.Err}
+	// log.Println("SERVER: (Primary) Finished GET - addr;", pb.me, "id;", id, "key;", key, "value;", reply.Value)
+	pb.mu.Unlock()
+
 	return nil
 }
 
@@ -126,31 +227,31 @@ func (pb *PBServer) tick() {
 	pb.mu.Lock() // threaded function
 	defer pb.mu.Unlock()
 	view, _ := pb.vs.Ping(pb.currView.Viewnum)
+	log.Println("SERVER: Ping()", view)
 	if view.Viewnum != pb.currView.Viewnum { // New View
-		fmt.Println("New View", view.Viewnum, view.Primary, view.Backup)
-		// if new backup, replicate primary key values
-		if view.Backup != "" && view.Backup != pb.currView.Backup {
-			args := SyncArgs{Data: pb.data}
+		if pb.me == view.Backup {
+			log.Println("SERVER: (BACKUP) New View", view)
+		} else if pb.me == view.Primary {
+			log.Println("SERVER: (PRIMARY) New View", view)
+		} else {
+			log.Println("SERVER: (OTHER) New View", view)
+		}
+
+		// log.Println("SERVER: New View", view.Viewnum, view.Primary, view.Backup)
+		// as long as backup exist and primary is up-to-date, sync
+		if view.Primary == pb.me && view.Backup != "" {
+			log.Println("SERVER: Syncing from tick()")
+			args := &SyncArgs{Data: pb.data, PutState: pb.putState, GetState: pb.getState}
 			var reply SyncReply
-			call(view.Backup, "PBServer.Sync", args, &reply)
-			if reply.Err != OK {
-				fmt.Println("Error replicating (TICK)")
+			ok := call(view.Backup, "PBServer.Sync", args, &reply)
+			if reply.Err != OK || !ok {
+				log.Println("SERVER: Error syncing new view to backup", reply)
+				return // don't update currView
 			}
 		}
 		pb.currView = view
-		fmt.Println("New CurrView:", pb.currView)
+		log.Println("SERVER: New CurrView:", pb.me, pb.currView)
 	}
-
-	// if vx.Primary == pb.me {
-	// 	fmt.Println("Primary:", pb.me)
-	// } else if vx.Backup == pb.me {
-	// 	pb.vs.Ping(pb.currView.Viewnum)
-	// 	fmt.Println("Backup", pb.me)
-	// } else {
-	// 	fmt.Println("Neither", pb.me)
-	// 	pb.vs.Ping(0)
-	// }
-
 }
 
 // tell the server to shut itself down.
@@ -166,9 +267,10 @@ func StartServer(vshost string, me string) *PBServer {
 	pb.vs = viewservice.MakeClerk(me, vshost)
 	pb.finish = make(chan interface{})
 	// Your pb.* initializations here.
-	pb.data = make(map[string]string)
-	pb.state = make(map[int64]string)
 	pb.currView = viewservice.View{}
+	pb.data = make(map[string]string)
+	pb.putState = make(map[int64]*PutState)
+	pb.getState = make(map[int64]*GetState)
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(pb)
@@ -195,7 +297,7 @@ func StartServer(vshost string, me string) *PBServer {
 					f, _ := c1.File()
 					err := syscall.Shutdown(int(f.Fd()), syscall.SHUT_WR)
 					if err != nil {
-						fmt.Printf("shutdown: %v\n", err)
+						log.Printf("shutdown: %v\n", err)
 					}
 					pb.done.Add(1)
 					go func() {
@@ -213,7 +315,7 @@ func StartServer(vshost string, me string) *PBServer {
 				conn.Close()
 			}
 			if err != nil && pb.dead == false {
-				fmt.Printf("PBServer(%v) accept: %v\n", me, err.Error())
+				log.Printf("PBServer(%v) accept: %v\n", me, err.Error())
 				pb.kill()
 			}
 		}

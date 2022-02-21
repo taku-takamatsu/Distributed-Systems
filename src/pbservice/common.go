@@ -27,8 +27,8 @@ type PutReply struct {
 
 type GetArgs struct {
 	Key string
-	Id  int64
 	// You'll have to add definitions here.
+	Id int64
 }
 
 type GetReply struct {
@@ -37,18 +37,52 @@ type GetReply struct {
 }
 
 // Your RPC definitions here.
+//RPC's to forward client requests from primary to backup
 
+type PutBackupArgs struct {
+	Key    string
+	Value  string
+	DoHash bool // For PutHash
+	// You'll have to add definitions here.
+	Id int64
+	// Field names must start with capital letters,
+	// otherwise RPC will break.
+}
+type PutBackupReply struct {
+	Err           Err
+	PreviousValue string // For PutHash
+}
+
+type GetBackupArgs struct {
+	Key string
+	// You'll have to add definitions here.
+	Id int64
+}
+
+type GetBackupReply struct {
+	Err   Err
+	Value string
+}
+
+// keep track of states and its error status
+type PutState struct {
+	Value string
+	Err   Err
+}
+
+type GetState struct {
+	Value string
+	Err   Err
+}
 type SyncArgs struct {
-	Data map[string]string
+	Data     map[string]string
+	PutState map[int64]*PutState
+	GetState map[int64]*GetState
 }
 
 type SyncReply struct {
 	Err Err
 }
-
-const (
-	DONE = "DONE"
-)
 
 func hash(s string) uint32 {
 	h := fnv.New32a()
