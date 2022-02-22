@@ -75,6 +75,7 @@ type GetState struct {
 	Err   Err
 }
 type SyncArgs struct {
+	Primary  string
 	Data     map[string]string
 	PutState map[int64]*PutState
 	GetState map[int64]*GetState

@@ -23,6 +23,7 @@ type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
 	primary string
+	me      string
 }
 
 func MakeClerk(vshost string, me string) *Clerk {
@@ -30,6 +31,7 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
 	ck.primary = ck.vs.Primary() // client should never contact VS unless needed
+	ck.me = me
 	return ck
 }
 
@@ -63,7 +65,7 @@ func call(srv string, rpcname string,
 		return true
 	}
 
-	fmt.Println(err)
+	fmt.Println(srv, err)
 	return false
 }
 

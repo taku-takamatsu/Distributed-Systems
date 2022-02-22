@@ -34,27 +34,31 @@ type PBServer struct {
 	done       sync.WaitGroup
 	finish     chan interface{}
 	// Your declarations here.
-	data     map[string]string
+	data     map[string]string   // k/v store
 	putState map[int64]*PutState // putState[xid] to remember duplicate PUT calls
 	getState map[int64]*GetState // getState[xid] to remember duplicate GET calls
-	currView viewservice.View
+	currView viewservice.View    // each server maintains status of current view
 	mu       sync.Mutex
+	synced   bool // flag to keep track of backup sync status; ref: https://edstem.org/us/courses/19078/discussion/1174137
 }
 
 func (pb *PBServer) Sync(args *SyncArgs, reply *SyncReply) error {
 	// handle transfer of complete key/value database from primary to backup
 	// make sure p/b are in sync
+	pb.mu.Lock()
 	log.Println("Server: Syncing..")
-	for k, v := range args.Data {
-		pb.data[k] = v
+	// return if view switched right before syncing
+	if pb.me != pb.currView.Backup || pb.currView.Primary != args.Primary {
+		reply.Err = ErrWrongServer
+		pb.mu.Unlock()
+		return errors.New("SERVER: (Backup) Sync ErrWrongServer")
 	}
-	for k, v := range args.PutState {
-		pb.putState[k] = &PutState{v.Value, v.Err}
-	}
-	for k, v := range args.GetState {
-		pb.getState[k] = &GetState{v.Value, v.Err}
-	}
+	pb.data = args.Data
+	pb.putState = args.PutState
+	pb.getState = args.GetState
 	reply.Err = OK
+	pb.synced = true // all synced, backup can accept operations
+	pb.mu.Unlock()
 	log.Println("Server: Sync Complete;", reply.Err)
 	return nil
 }
@@ -63,9 +67,9 @@ func (pb *PBServer) PutBackup(args *PutBackupArgs, reply *PutBackupReply) error 
 	//handle client PUT requests from primary to backup
 	// maintain state in backup as well
 	pb.mu.Lock()
-	log.Println("SERVER: (Backup) PUT received", args)
+	log.Println("SERVER: (Backup) PUT received - id", args.Id, "key:", args.Key, "value:", args.Value, "address:", pb.me)
 
-	if pb.currView.Backup != pb.me {
+	if pb.currView.Backup != pb.me || !pb.synced { // wrong server or backup not synced with primary
 		reply.Err = ErrWrongServer
 		pb.mu.Unlock()
 		return errors.New("SERVER: (Backup) PUT ErrWrongServer")
@@ -79,14 +83,15 @@ func (pb *PBServer) PutBackup(args *PutBackupArgs, reply *PutBackupReply) error 
 	pb.data[key] = value    // set value
 	reply.Err = OK
 	pb.putState[id] = &PutState{prevVal, reply.Err}
-	log.Println("SERVER: (Backup) Finished PUT - addr;", pb.me, "id;", id, "key;", key, "value;", pb.data[key])
+
+	log.Println("SERVER: (Backup) PUT SUCCESS - id:", id, "key:", key, "value:", pb.data[key])
 	pb.mu.Unlock()
 	return nil
 }
 
 func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 	pb.mu.Lock()
-	log.Println("SERVER: (Primary) PUT received", args, "p:", pb.me)
+	log.Println("SERVER: (PRIMARY) PUT received - id", args.Id, "key:", args.Key, "value:", args.Value, "address:", pb.me)
 
 	if pb.currView.Primary != pb.me { // wrong server
 		reply.Err = ErrWrongServer
@@ -132,7 +137,7 @@ func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 	reply.PreviousValue = prevVal
 	reply.Err = OK
 	pb.putState[id] = &PutState{prevVal, reply.Err}
-	log.Println("SERVER: (Primary) Finished PUT - addr;", pb.me, "id;", id, "key;", key, "value;", pb.data[key])
+	log.Println("SERVER: (Primary) PUT SUCCESS - id:", id, "key:", key, "value:", pb.data[key])
 	pb.mu.Unlock()
 
 	return nil
@@ -141,7 +146,7 @@ func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 func (pb *PBServer) GetBackup(args *GetBackupArgs, reply *GetBackupReply) error {
 	pb.mu.Lock()
 	// log.Println("SERVER: (Backup) GET received - key:", args.Key, "with id:", args.Id)
-	if pb.currView.Backup != pb.me {
+	if pb.currView.Backup != pb.me || !pb.synced { // don't move on if not synced with primary
 		reply.Err = ErrWrongServer
 		pb.mu.Unlock()
 		return errors.New("SERVER: (Backup) GET ErrWrongServer")
@@ -168,7 +173,7 @@ func (pb *PBServer) GetBackup(args *GetBackupArgs, reply *GetBackupReply) error 
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	pb.mu.Lock()
-	log.Println("SERVER: (Primary) GET received - key:", args.Key, "with id:", args.Id)
+	// log.Println("SERVER: (Primary) GET received - key:", args.Key, "with id:", args.Id)
 
 	if pb.currView.Primary != pb.me {
 		reply.Err = ErrWrongServer
@@ -212,7 +217,7 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 		reply.Err = OK
 	}
 	pb.getState[id] = &GetState{reply.Value, reply.Err}
-	log.Println("SERVER: (Primary) Finished GET - addr;", pb.me, "id;", id, "key;", key, "value;", reply.Value)
+	// log.Println("SERVER: (Primary) Finished GET - addr;", pb.me, "id;", id, "key;", key, "value;", reply.Value)
 	pb.mu.Unlock()
 
 	return nil
@@ -226,9 +231,9 @@ func (pb *PBServer) tick() {
 	// log.Println("SERVER: Ping()", view)
 	if view.Viewnum != pb.currView.Viewnum { // New View
 		// log.Println("SERVER: New View", view.Viewnum, view.Primary, view.Backup)
-		// as long as backup exist and primary is up-to-date, sync
+		// as long as current server is primary and backup exist, sync
 		if view.Primary == pb.me && view.Backup != "" {
-			args := &SyncArgs{Data: pb.data, PutState: pb.putState, GetState: pb.getState}
+			args := &SyncArgs{view.Primary, pb.data, pb.putState, pb.getState}
 			var reply SyncReply
 			ok := call(view.Backup, "PBServer.Sync", args, &reply)
 			if reply.Err != OK || !ok {
@@ -236,8 +241,12 @@ func (pb *PBServer) tick() {
 				return // don't update currView
 			}
 		}
-		pb.currView = view
+		pb.currView = view // only updates currView if sync is successful
 		// log.Println("SERVER: New CurrView:", pb.me, pb.currView)
+	}
+	// if idle, ensure the sync flag is false
+	if pb.me != pb.currView.Primary && pb.me != pb.currView.Backup {
+		pb.synced = false // if not p/b, reset sync status
 	}
 }
 
@@ -258,6 +267,7 @@ func StartServer(vshost string, me string) *PBServer {
 	pb.data = make(map[string]string)
 	pb.putState = make(map[int64]*PutState)
 	pb.getState = make(map[int64]*GetState)
+	pb.synced = false
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(pb)
@@ -277,9 +287,11 @@ func StartServer(vshost string, me string) *PBServer {
 			if err == nil && pb.dead == false {
 				if pb.unreliable && (rand.Int63()%1000) < 100 {
 					// discard the request.
+					log.Printf("%s: discard request", pb.me)
 					conn.Close()
 				} else if pb.unreliable && (rand.Int63()%1000) < 200 {
 					// process the request but force discard of reply.
+					log.Printf("%s: process request but force discard of reply", pb.me)
 					c1 := conn.(*net.UnixConn)
 					f, _ := c1.File()
 					err := syscall.Shutdown(int(f.Fd()), syscall.SHUT_WR)
@@ -299,6 +311,7 @@ func StartServer(vshost string, me string) *PBServer {
 					}()
 				}
 			} else if err == nil {
+				log.Println("pb.dead:", pb.dead, "closing connection")
 				conn.Close()
 			}
 			if err != nil && pb.dead == false {
