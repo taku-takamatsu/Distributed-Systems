@@ -40,16 +40,18 @@ const (
 )
 
 type HandlerArg struct {
-	Req string // request type: either prepare, accept or decide
-	Seq int
-	N   int         // unique N
-	V   interface{} // value
+	Req  string // request type: either prepare, accept or decide
+	Seq  int
+	N    int         // unique N
+	V    interface{} // value
+	from int
 }
 
 type HandlerReply struct {
-	Res string      // either REJECT or OK
-	N   int         // could be N or Na
-	V   interface{} // V or Va, or nil
+	Res  string      // either REJECT or OK
+	N    int         // could be N or Na
+	V    interface{} // V or Va, or nil
+	done int         // done seq number
 }
 
 type PrepareOK struct {
@@ -82,8 +84,8 @@ type Paxos struct {
 
 	// Each instance should have its own separate execution of the Paxos protocol (able to execute instances concurrently)
 	instances map[int]State // corresponding instance + state, indexed by seq
-	Z         map[int]int   // Highest seq number passed to Done(), indexed by peer i
-	maxRound  int           // largest N value seen so far
+	done      map[int]int   // = Z; Highest seq number passed to Done(), indexed by peer i
+	propNum   int           // largest N value seen so far
 }
 
 //
@@ -147,26 +149,25 @@ func (px *Paxos) Proposer(seq int, v interface{}) error {
 	for decided, _ := px.Status(seq); !decided; { // while not decided:
 		//  choose n, unique and higher than any n seen so far
 		px.mu.Lock()
-		px.maxRound++ // highest round number seen globally
-		n := px.maxRound + px.me
-		// px.instances[seq] = instance
+		px.propNum++ // highest round number seen globally
+		n := px.propNum + px.me
 		px.mu.Unlock()
 		//  send prepare(n) to all servers including self
-		log.Printf("Proposer: Send Prepare with n=%v and v=%v \n", n, v)
+		log.Printf("Proposer: Send Prepare with n=%v and v=%v, seq=%v \n", n, v, seq)
 		prepareRes := px.SendPrepare(n, v, seq)
 		if prepareRes.OK { // wait until majority of acceptors return PROPOSE-OK responses
 			// log.Println("Proposer: Received Prepare-OK")
 			//  if prepare_ok(n_a, v_a) from majority:
 			//    v' = v_a with highest n_a; choose own v otherwise
 			//    send accept(n, v') to all
-			log.Printf("Proposer: Send Accept with n=%v and v=%v \n", n, prepareRes.V)
+			log.Printf("Proposer: Send Accept with n=%v and v=%v, seq=%v \n", n, prepareRes.V, seq)
 			acceptRes := px.SendAccept(n, prepareRes.V, seq)
 			// log.Println("Proposer: received response from Accept:", acceptRes)
 
 			//    if accept_ok(n) from majority:
 			if acceptRes.OK {
 				// send decided(v') to all
-				log.Printf("Proposer: Send Decide with v=%v \n", prepareRes.V)
+				log.Printf("Proposer: Send Decide with v=%v,  seq=%v\n", prepareRes.V, seq)
 				px.SendDecide(prepareRes.V, seq) // no response, doesn't need to wait
 			}
 		}
@@ -177,16 +178,25 @@ func (px *Paxos) Proposer(seq int, v interface{}) error {
 	return nil
 }
 
+func (px *Paxos) PiggyBack(from int, done int) {
+	// from: peer
+	// done: done value from peer
+	px.mu.Lock()
+	px.done[from] = done
+	log.Printf("PiggyBack: from=%v, done=%v, px.done=%v", from, done, px.done)
+	px.mu.Unlock()
+}
+
 // Prepare(N) --> RPC to all peers including self
 // send RPC's to all peers
 func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 	// log.Println("SendPrepare: Prepare received", N, v)
 	// build args
-	arg := &HandlerArg{prepare, seq, N, ""}
+	arg := &HandlerArg{prepare, seq, N, "", px.me}
 	acks := 0 // count of majority of acks received from acceptor
 	nPeers := len(px.peers)
-	highestN := 0
-	var highestV interface{}
+	highestNa := 0
+	var highestVa interface{}
 	for i, p := range px.peers {
 		var reply HandlerReply
 		log.Println("SendPrepare: Sending Prepare to Acceptor:", p)
@@ -202,9 +212,9 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 		log.Println("SendPrepare: Received Response from Acceptor:", ok, reply)
 		if ok && reply.Res == OK {
 			// if Prepare_OK, increment acks
-			if highestN < reply.N { // Na
-				highestN = reply.N // Na
-				highestV = reply.V // Va
+			if highestNa < reply.N { // Na
+				highestNa = reply.N // Na
+				highestVa = reply.V // Va
 			}
 			acks++
 		}
@@ -213,11 +223,11 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 			log.Println("SendPrepare: Majority received")
 			// choose V = the value of the highest-numbered proposal among those returned by the acceptors
 			// (or any value he wants if no Va was returned by any acceptor)
-			if highestV == nil {
-				highestN = N
-				highestV = v // choose own if no Va
+			if highestVa == nil {
+				highestNa = N
+				highestVa = v // choose own if no Va
 			}
-			return PrepareOK{true, highestN, highestV}
+			return PrepareOK{true, highestNa, highestVa}
 		}
 	}
 	return PrepareOK{false, 0, nil}
@@ -225,7 +235,7 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 
 func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 	// build args
-	arg := &HandlerArg{accept, seq, N, V}
+	arg := &HandlerArg{accept, seq, N, V, px.me}
 	acks := 0 // count of majority of acks received from acceptor
 	nPeers := len(px.peers)
 	for i, p := range px.peers {
@@ -250,16 +260,36 @@ func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 }
 
 func (px *Paxos) SendDecide(Va interface{}, seq int) {
+	log.Printf("SendDecide: Received request from seq=%v", seq)
 	// Send <DECIDE, Va> to all replicas
-	arg := &HandlerArg{decide, seq, 0, Va} // 0 not used
+	arg := &HandlerArg{decide, seq, 0, Va, px.me} // 0 not used
 	for i, p := range px.peers {
-		var reply HandlerReply
-		// Don't have to wait tio receive decide_ok (https://edstem.org/us/courses/19078/discussion/1215100)
-		if i == px.me {
-			px.Acceptor(arg, &reply) //local method call if self
-		} else {
-			call(p, "Paxos.Acceptor", arg, &reply)
-		}
+		log.Printf("SendDecide: Spawning go thread for seq=%v with i=%v, p=%v, me=%v\n", seq, i, p, px.me)
+		go func(i int, p string) {
+			for {
+				if px.dead {
+					return
+				}
+				var reply HandlerReply
+				var ok bool
+				// Don't have to wait tio receive decide_ok (https://edstem.org/us/courses/19078/discussion/1215100)
+				if i == px.me {
+					log.Printf("SendDecide: making call to acceptor seq=%v, me=%v LOCAL\n", seq, px.me)
+					px.Acceptor(arg, &reply) //local method call if self
+					ok = true
+				} else {
+					log.Printf("SendDecide: making call to acceptor seq=%v, me=%v RPC\n", seq, px.me)
+					ok = call(p, "Paxos.Acceptor", arg, &reply)
+				}
+				if ok && reply.Res == OK {
+					log.Printf("SendDecide: reply OK, returning; for seq=%v, me=%v, i=%v, p=%v", seq, px.me, i, p)
+					px.PiggyBack(i, reply.done) // piggyback the done value
+					return
+				} else {
+					log.Printf("SendDecide: reply NOT OK reply=%v; for seq=%v, me=%v, i=%v, p=%v", reply, seq, px.me, i, p)
+				}
+			}
+		}(i, p)
 	}
 }
 
@@ -298,9 +328,12 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 		// nodes that might not have heard previous ACCEPT messages learn the chosen value
 		instance.value = args.V
 		px.instances[args.Seq] = instance
-		px.Done(args.Seq)
 		// don't bother updating Acceptor states, just send back OK (ref: https://edstem.org/us/courses/19078/discussion/1215100)
 		reply.Res = OK
+		// each paxos peer should tell each other peer the highest Done argument supplied by local app
+		reply.done = px.done[px.me] // send back my done value
+		log.Printf("Acceptor: px.done=%v for seq=%v, me=%v", px.done, args.Seq, px.me)
+		return nil
 	}
 	log.Printf("Acceptor: Returning reply to Proposer: %v", reply)
 	return nil
@@ -313,11 +346,12 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 // see the comments for Min() for more explanation.
 //
 func (px *Paxos) Done(seq int) {
-	// locked from parent
-	log.Printf("Done: Called for seq=%v \n", seq)
-	if seq > px.Z[px.me] {
-		px.Z[px.me] = seq
+	px.mu.Lock()
+	if seq > px.done[px.me] { // px.done stores highest Done() sequence for each peer
+		px.done[px.me] = seq
 	}
+	log.Printf("Done: Called for seq=%v, me=%v, px.done=%v\n", seq, px.me, px.done)
+	px.mu.Unlock()
 }
 
 //
@@ -330,7 +364,7 @@ func (px *Paxos) Max() int {
 	defer px.mu.Unlock()
 	// Your code here.
 	m := math.MinInt32
-	for _, z := range px.Z {
+	for _, z := range px.done {
 		if z > m {
 			m = z
 		}
@@ -368,15 +402,29 @@ func (px *Paxos) Max() int {
 // instances.
 //
 func (px *Paxos) Min() int {
-	// px.mu.Lock()
-	// defer px.mu.Unlock()
-	m := px.Z[px.me] // current me
-	for _, z := range px.Z {
+	px.mu.Lock()
+	m := px.done[px.me] // min can only be lower than current done()
+	log.Printf("Min: me=%v, minVal=%v,  px.done=%v", px.me, m, px.done)
+	for _, z := range px.done {
 		if z < m {
 			m = z
 		}
 	}
+	px.mu.Unlock()
+	px.Forget(m)
 	return m + 1 // one more than min
+}
+
+func (px *Paxos) Forget(min int) {
+	// given min value, each peer should discard instances <= min()
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	for seq, _ := range px.instances {
+		if seq <= min {
+			delete(px.instances, seq)
+		}
+	}
+	log.Printf("Forget: me=%v, px.done=%v", px.me, px.done)
 }
 
 //
@@ -387,14 +435,15 @@ func (px *Paxos) Min() int {
 // it should not contact other Paxos peers.
 //
 func (px *Paxos) Status(seq int) (bool, interface{}) {
-	px.mu.Lock()
-	defer px.mu.Unlock()
 	// Status() should consult the local Paxos peer’s state and return immediately;
 	// If Status() is called with a sequence number less than Min() -> return false
-	if seq < px.Min() {
+	// log.Printf("Status: called with px.done=%v, seq=%v, me=%v", px.done, seq, px.me)
+	if seq < px.Min() { //min thread locked inside function
 		log.Printf("Status: seq=%v too low than min=%v\n", seq, px.Min())
 		return false, nil
 	}
+	px.mu.Lock()
+	defer px.mu.Unlock()
 	v, exist := px.instances[seq]
 	if exist && v.value != nil { // any decided instance for this instance will have a value
 		log.Printf("Status: seq=%v for px=%v found value=%v\n", seq, px.me, v.value)
@@ -425,11 +474,11 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.peers = peers
 	px.me = me
 	// Your initialization code here.
-	px.maxRound = 0
+	px.propNum = 0
 	px.instances = make(map[int]State)
-	px.Z = make(map[int]int)
+	px.done = make(map[int]int)
 	for p := range px.peers { // pnitialize with -1 (done() never called)
-		px.Z[p] = -1
+		px.done[p] = -1
 	}
 	if rpcs != nil {
 		// caller will create socket &c
