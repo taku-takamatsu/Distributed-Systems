@@ -39,6 +39,7 @@ const (
 	OK      = "ok"
 )
 
+// RPCs -- remember CAPS!
 type HandlerArg struct {
 	Req  string // request type: either prepare, accept or decide
 	Seq  int
@@ -46,7 +47,6 @@ type HandlerArg struct {
 	V    interface{} // value
 	from int
 }
-
 type HandlerReply struct {
 	Res  string      // either REJECT or OK
 	N    int         // could be N or Na
@@ -55,16 +55,19 @@ type HandlerReply struct {
 	Done int // done seq number
 }
 
+// helpers
 type PrepareOK struct {
 	OK bool
 	N  int
 	V  interface{}
 }
-
 type AcceptOK struct {
 	OK bool
 	N  int
 }
+
+// State of each instance
+// holds Acceptor state + actual value when decided
 type State struct {
 	Na    int         // highest accepted proposal
 	Va    interface{} // value of the highest accepted proposal
@@ -133,15 +136,10 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 // is reached.
 //
 func (px *Paxos) Start(seq int, v interface{}) {
-	// Your code here.
-	// start a proposer function in it's own thread for each instance, as needed (e.g. in Start()
-	// Write a proposer function that drives the Paxos protocol for an instance, and RPC handlers that implement acceptors.
-
-	// should immediately return without waiting for agreement to complete
-	// use Status() to figure out whether Paxos peer thinks the instance has reached agreement, and if so, what the agreed value is.
+	// Start a proposer function in it's own thread for each instance, as needed (e.g. in Start()
 	go func() {
 		px.Proposer(seq, v)
-	}()
+	}() // to return immediately
 }
 
 func (px *Paxos) Proposer(seq int, v interface{}) error {
@@ -302,7 +300,7 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 
 	// each paxos peer should tell each other peer the highest Done argument supplied by local app
 	reply.From = px.me
-	if done, exist := px.done[px.me]; exist {
+	if done, exist := px.done[px.me]; exist { // send done value back to proposer
 		reply.Done = done
 	} else {
 		reply.Done = -1
@@ -335,13 +333,11 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 			reply.N = instance.Np
 		}
 	} else if args.Req == decide { // Phase 3
-		// close the protocol
-		// nodes that might not have heard previous ACCEPT messages learn the chosen value
+		// don't bother updating Acceptor states, just send back OK
+		// ref: https://edstem.org/us/courses/19078/discussion/1215100
 		instance.value = args.V
 		px.instances[args.Seq] = instance
-		// don't bother updating Acceptor states, just send back OK (ref: https://edstem.org/us/courses/19078/discussion/1215100)
 		reply.Res = OK
-		// log.Printf("Acceptor: px.done=%v for seq=%v, me=%v", px.done, args.Seq, px.me)
 	}
 	log.Printf("Acceptor: me=%v reply to %v with done=%v", px.me, args.from, reply.Done)
 	return nil
