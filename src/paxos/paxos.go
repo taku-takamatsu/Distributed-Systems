@@ -29,6 +29,7 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 )
 
 const (
@@ -145,7 +146,7 @@ func (px *Paxos) Start(seq int, v interface{}) {
 func (px *Paxos) Proposer(seq int, v interface{}) error {
 	// log.Printf("Proposer: Called with seq=%v, current min=%v, \n", seq, px.Min())
 	// get the corresponding instance
-	for decided, _ := px.Status(seq); !decided; { // while not decided:
+	for decided, _ := px.Status(seq); !decided && !px.dead; { // while not decided and proposer not dead:
 		//  choose n, unique and higher than any n seen so far
 		px.mu.Lock()
 		px.propNum++ // highest round number seen globally
@@ -169,6 +170,10 @@ func (px *Paxos) Proposer(seq int, v interface{}) error {
 		}
 		// retry decided arg
 		decided, _ = px.Status(seq)
+		if !decided {
+			// if not decided, we'll retry with random backoff
+			time.Sleep(time.Duration(rand.Int63()%200) * time.Millisecond)
+		}
 	}
 	// log.Println("Proposer: returned")
 	return nil
@@ -181,12 +186,11 @@ func (px *Paxos) PiggyBack(from int, done int) {
 	if px.done[from] < done {
 		px.done[from] = done
 	}
-	log.Printf("PiggyBack: me=%v, from=%v, done=%v, px.done=%v", px.me, from, done, px.done)
+	// log.Printf("PiggyBack: me=%v, from=%v, done=%v, px.done=%v", px.me, from, done, px.done)
 	px.mu.Unlock()
 }
 
 // Prepare(N) --> RPC to all peers including self
-// send RPC's to all peers
 func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 	// build args
 	arg := &HandlerArg{prepare, seq, N, "", px.me}
@@ -207,7 +211,7 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 			ok = call(p, "Paxos.Acceptor", arg, &reply)
 		}
 		if ok && reply.Res == OK {
-			log.Printf("SendPrepare: returned from=%v with done=%v\n", reply.From, reply.Done)
+			// log.Printf("SendPrepare: returned from=%v with done=%v\n", reply.From, reply.Done)
 			px.PiggyBack(reply.From, reply.Done) // piggyback the done value
 			// if Prepare_OK, increment acks
 			if highestNa < reply.N { // Na
@@ -228,6 +232,7 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 			return PrepareOK{true, highestNa, highestVa}
 		}
 	}
+	log.Printf("SendPrepare: ERROR couldn't get majority")
 	return PrepareOK{false, 0, nil}
 }
 
@@ -256,6 +261,7 @@ func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 			return AcceptOK{true, N}
 		}
 	}
+	log.Printf("SendAccept: ERROR couldn't get majority")
 	return AcceptOK{false, N}
 }
 
@@ -266,29 +272,25 @@ func (px *Paxos) SendDecide(Va interface{}, seq int) {
 	for i, p := range px.peers {
 		// log.Printf("SendDecide: Spawning go thread for seq=%v with i=%v, p=%v, me=%v\n", seq, i, p, px.me)
 		go func(i int, p string) {
-			for {
-				if px.dead {
-					return
-				}
-				var reply HandlerReply
-				var ok bool
-				// Don't have to wait tio receive decide_ok (https://edstem.org/us/courses/19078/discussion/1215100)
-				if i == px.me {
-					log.Printf("SendDecide: making call to acceptor seq=%v, me=%v LOCAL\n", seq, px.me)
-					px.Acceptor(arg, &reply) //local method call if self
-					ok = true
-				} else {
-					log.Printf("SendDecide: making call to acceptor seq=%v, me=%v RPC\n", seq, px.me)
-					ok = call(p, "Paxos.Acceptor", arg, &reply)
-				}
-				if ok && reply.Res == OK {
-					log.Printf("SendDecide: reply OK, returning; for seq=%v, me=%v, i=%v, p=%v, from=%v", seq, px.me, i, p, reply.From)
-					px.PiggyBack(reply.From, reply.Done) // piggyback the done value
-					return
-				} else {
-					log.Printf("SendDecide: reply NOT OK reply=%v; for seq=%v, me=%v, i=%v, p=%v", reply, seq, px.me, i, p)
-				}
+			var reply HandlerReply
+			var ok bool
+			// Don't have to wait to receive decide_ok (https://edstem.org/us/courses/19078/discussion/1215100)
+			if i == px.me {
+				// log.Printf("SendDecide: making call to acceptor seq=%v, me=%v LOCAL\n", seq, px.me)
+				px.Acceptor(arg, &reply) //local method call if self
+				ok = true
+			} else {
+				// log.Printf("SendDecide: making call to acceptor seq=%v, me=%v RPC\n", seq, px.me)
+				ok = call(p, "Paxos.Acceptor", arg, &reply)
 			}
+			if ok && reply.Res == OK {
+				log.Printf("SendDecide: reply OK, returning; for seq=%v, me=%v, i=%v, p=%v, from=%v", seq, px.me, i, p, reply.From)
+				px.PiggyBack(reply.From, reply.Done) // piggyback the done value
+				return
+			} else {
+				log.Printf("SendDecide: reply NOT OK reply=%v; for seq=%v, me=%v, i=%v, p=%v", reply, seq, px.me, i, p)
+			}
+			// }
 		}(i, p)
 	}
 }
@@ -408,7 +410,7 @@ func (px *Paxos) Max() int {
 func (px *Paxos) Min() int {
 	px.mu.Lock()
 	m := px.done[px.me] // min can only be lower than current done()
-	log.Printf("Min: me=%v, minVal=%v,  px.done=%v", px.me, m, px.done)
+	// log.Printf("Min: me=%v, minVal=%v,  px.done=%v", px.me, m, px.done)
 	for _, z := range px.done {
 		if z < m {
 			m = z
@@ -449,7 +451,7 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
 	px.mu.Lock() // lock for the rest
 	defer px.mu.Unlock()
 	v, exist := px.instances[seq]
-	if exist && v.value != nil { // any decided instance for this instance will have a value
+	if exist && v.value != nil { // any decided instance for this peer will have a value
 		// log.Printf("Status: seq=%v for px=%v found\n", seq, px.me)
 		return true, v.value
 	}
@@ -481,7 +483,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.propNum = 0
 	px.instances = make(map[int]State)
 	px.done = make(map[int]int)
-	for p := range px.peers { // pnitialize with -1 (done() never called)
+	for p := range px.peers { // initialize with -1 for each peer (done() never called)
 		px.done[p] = -1
 	}
 	if rpcs != nil {
@@ -517,7 +519,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 						f, _ := c1.File()
 						err := syscall.Shutdown(int(f.Fd()), syscall.SHUT_WR)
 						if err != nil {
-							// log.Printf("shutdown: %v\n", err)
+							log.Printf("shutdown: %v\n", err)
 						}
 						px.rpcCount++
 						go rpcs.ServeConn(conn)
@@ -529,7 +531,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 					conn.Close()
 				}
 				if err != nil && px.dead == false {
-					// log.Printf("Paxos(%v) accept: %v\n", me, err.Error())
+					log.Printf("Paxos(%v) accept: %v\n", me, err.Error())
 				}
 			}
 		}()
