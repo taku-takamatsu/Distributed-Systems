@@ -22,7 +22,6 @@ package paxos
 
 import (
 	"log"
-	"math"
 	"math/rand"
 	"net"
 	"net/rpc"
@@ -91,6 +90,7 @@ type Paxos struct {
 	instances map[int]State // corresponding instance + state, indexed by seq
 	done      map[int]int   // = Z; Highest seq number passed to Done(), indexed by peer i
 	propNum   int           // largest N value seen so far
+	maxSeq    int           // keep track of highest instance sequence known to peer
 }
 
 //
@@ -186,7 +186,7 @@ func (px *Paxos) PiggyBack(from int, done int) {
 	if px.done[from] < done {
 		px.done[from] = done
 	}
-	// log.Printf("PiggyBack: me=%v, from=%v, done=%v, px.done=%v", px.me, from, done, px.done)
+	log.Printf("PiggyBack: me=%v, from=%v, done=%v, px.done=%v", px.me, from, done, px.done)
 	px.mu.Unlock()
 }
 
@@ -258,6 +258,15 @@ func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 		// log.Printf("SendAccept: Determining majority %v/%v for seq=%v \n", acks, nPeers, seq)
 		if acks > nPeers/2 { // if majority, return OK
 			// log.Println("SendAccept: Majority received")
+			// Consensus reached, update values
+			// px.mu.Lock()
+			// if px.done[px.me] < seq {
+			// 	px.done[px.me] = seq
+			// }
+			// instance := px.instances[seq]
+			// instance.value = V
+			// px.instances[seq] = instance
+			// px.mu.Unlock()
 			return AcceptOK{true, N}
 		}
 	}
@@ -290,7 +299,6 @@ func (px *Paxos) SendDecide(Va interface{}, seq int) {
 			} else {
 				log.Printf("SendDecide: reply NOT OK reply=%v; for seq=%v, me=%v, i=%v, p=%v", reply, seq, px.me, i, p)
 			}
-			// }
 		}(i, p)
 	}
 }
@@ -299,7 +307,6 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 	// log.Printf("Acceptor: Received req from proposer arg=%v\n", args)
-
 	// each paxos peer should tell each other peer the highest Done argument supplied by local app
 	reply.From = px.me
 	if done, exist := px.done[px.me]; exist { // send done value back to proposer
@@ -337,6 +344,16 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 	} else if args.Req == decide { // Phase 3
 		// don't bother updating Acceptor states, just send back OK
 		// ref: https://edstem.org/us/courses/19078/discussion/1215100
+		// jk lecture slides said to update
+		if args.N >= instance.Np {
+			instance.Np = args.N
+			instance.Na = args.N
+			instance.Va = args.V
+		}
+		// also update maximum sequence
+		if px.maxSeq < args.Seq {
+			px.maxSeq = args.Seq
+		}
 		instance.value = args.V
 		px.instances[args.Seq] = instance
 		reply.Res = OK
@@ -368,15 +385,7 @@ func (px *Paxos) Done(seq int) {
 func (px *Paxos) Max() int {
 	px.mu.Lock()
 	defer px.mu.Unlock()
-	// Your code here.
-	m := math.MinInt32
-	for _, z := range px.done {
-		if z > m {
-			m = z
-		}
-	}
-	// log.Println("Max: ", m)
-	return m
+	return px.maxSeq
 }
 
 //
@@ -430,7 +439,7 @@ func (px *Paxos) Forget(min int) {
 			delete(px.instances, seq)
 		}
 	}
-	// log.Printf("Forget: me=%v, px.done=%v", px.me, px.done)
+	log.Printf("Forget: me=%v, px.done=%v", px.me, px.done)
 }
 
 //
