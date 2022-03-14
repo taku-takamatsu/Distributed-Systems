@@ -191,18 +191,27 @@ func (px *Paxos) PiggyBack(from int, done int) {
 	px.mu.Unlock()
 }
 
+func (px *Paxos) GetDone() int {
+	px.mu.Lock()
+	done, exist := px.done[px.me]
+	px.mu.Unlock()
+	if exist {
+		return done
+	} else {
+		return -1
+	}
+}
+
 // Prepare(N) --> RPC to all peers including self
 func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 	// build args
+	arg := &HandlerArg{prepare, seq, N, "", px.me, -1}
 	acks := 0 // count of majority of acks received from acceptor
 	nPeers := len(px.peers)
 	highestNa := 0
 	var highestVa interface{}
 	for i, p := range px.peers {
-		arg := &HandlerArg{prepare, seq, N, "", px.me, px.done[px.me]}
-		if _, exist := px.done[px.me]; !exist {
-			arg = &HandlerArg{prepare, seq, N, "", px.me, -1}
-		}
+		arg.Done = px.GetDone() // update done value
 		var reply HandlerReply
 		// log.Println("SendPrepare: Sending Prepare to Acceptor:", p)
 		var ok bool
@@ -242,13 +251,11 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 
 func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 	// build args
+	arg := &HandlerArg{accept, seq, N, V, px.me, -1}
 	acks := 0 // count of majority of acks received from acceptor
 	nPeers := len(px.peers)
 	for i, p := range px.peers {
-		arg := &HandlerArg{accept, seq, N, V, px.me, px.done[px.me]}
-		if _, exist := px.done[px.me]; !exist {
-			arg = &HandlerArg{accept, seq, N, V, px.me, -1}
-		}
+		arg.Done = px.GetDone() // update done value
 		var reply HandlerReply
 		var ok bool
 		if i == px.me {
@@ -274,13 +281,11 @@ func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 func (px *Paxos) SendDecide(Va interface{}, seq int) {
 	// log.Printf("SendDecide: Received request from seq=%v", seq)
 	// Send <DECIDE, Va> to all replicas
+	arg := &HandlerArg{decide, seq, 0, Va, px.me, -1} // 0 not used
 	for i, p := range px.peers {
 		// log.Printf("SendDecide: Spawning go thread for seq=%v with i=%v, p=%v, me=%v\n", seq, i, p, px.me)
 		go func(i int, p string) {
-			arg := &HandlerArg{decide, seq, 0, Va, px.me, px.done[px.me]} // 0 not used
-			if _, exist := px.done[px.me]; !exist {                       // set to -1 if not exist
-				arg = &HandlerArg{decide, seq, 0, Va, px.me, -1}
-			}
+			arg.Done = px.GetDone() // update done value
 			var reply HandlerReply
 			var ok bool
 			// Don't have to wait to receive decide_ok (https://edstem.org/us/courses/19078/discussion/1215100)
