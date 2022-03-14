@@ -187,7 +187,7 @@ func (px *Paxos) PiggyBack(from int, done int) {
 	if px.done[from] < done {
 		px.done[from] = done
 	}
-	log.Printf("PiggyBack: me=%v, from=%v, done=%v, px.done=%v", px.me, from, done, px.done)
+	// log.Printf("PiggyBack: me=%v, from=%v, done=%v, px.done=%v", px.me, from, done, px.done)
 	px.mu.Unlock()
 }
 
@@ -245,7 +245,7 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 			return PrepareOK{true, highestNa, highestVa}
 		}
 	}
-	log.Printf("SendPrepare: ERROR couldn't get majority")
+	// log.Printf("SendPrepare: ERROR couldn't get majority")
 	return PrepareOK{false, 0, nil}
 }
 
@@ -265,7 +265,7 @@ func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 			ok = call(p, "Paxos.Acceptor", arg, &reply)
 		}
 		if ok && reply.Res == OK {
-			log.Printf("SendAccept: returned from=%v with done=%v", reply.From, reply.Done)
+			// log.Printf("SendAccept: returned from=%v with done=%v", reply.From, reply.Done)
 			px.PiggyBack(reply.From, reply.Done) // piggyback the done value
 			acks++                               // if Prepare_OK, increment acks
 		}
@@ -274,7 +274,7 @@ func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 			return AcceptOK{true, N}
 		}
 	}
-	log.Printf("SendAccept: ERROR couldn't get majority")
+	// log.Printf("SendAccept: ERROR couldn't get majority")
 	return AcceptOK{false, N}
 }
 
@@ -298,11 +298,11 @@ func (px *Paxos) SendDecide(Va interface{}, seq int) {
 				ok = call(p, "Paxos.Acceptor", arg, &reply)
 			}
 			if ok && reply.Res == OK {
-				log.Printf("SendDecide: reply OK, returning; for seq=%v, me=%v, i=%v, p=%v, from=%v", seq, px.me, i, p, reply.From)
+				// log.Printf("SendDecide: reply OK, returning; for seq=%v, me=%v, i=%v, p=%v, from=%v", seq, px.me, i, p, reply.From)
 				px.PiggyBack(reply.From, reply.Done) // piggyback the done value
 				return
 			} else {
-				log.Printf("SendDecide: reply NOT OK reply=%v; for seq=%v, me=%v, i=%v, p=%v", reply, seq, px.me, i, p)
+				// log.Printf("SendDecide: reply NOT OK reply=%v; for seq=%v, me=%v, i=%v, p=%v", reply, seq, px.me, i, p)
 			}
 		}(i, p)
 	}
@@ -364,7 +364,7 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 		px.instances[args.Seq] = instance
 		reply.Res = OK
 	}
-	log.Printf("Acceptor: me=%v reply to %v with done=%v", px.me, args.From, reply.Done)
+	// log.Printf("Acceptor: me=%v reply to %v with done=%v", px.me, args.From, reply.Done)
 	return nil
 }
 
@@ -379,7 +379,7 @@ func (px *Paxos) Done(seq int) {
 	if seq > px.done[px.me] { // px.done stores highest Done() sequence for each peer
 		px.done[px.me] = seq
 	}
-	log.Printf("Done: Called for seq=%v, me=%v, px.done=%v\n", seq, px.me, px.done)
+	// log.Printf("Done: Called for seq=%v, me=%v, px.done=%v\n", seq, px.me, px.done)
 	px.mu.Unlock()
 }
 
@@ -445,7 +445,7 @@ func (px *Paxos) Forget(min int) {
 			delete(px.instances, seq)
 		}
 	}
-	log.Printf("Forget: me=%v, px.done=%v", px.me, px.done)
+	// log.Printf("Forget: me=%v, px.done=%v", px.me, px.done)
 }
 
 //
