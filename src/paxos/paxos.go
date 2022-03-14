@@ -45,7 +45,8 @@ type HandlerArg struct {
 	Seq  int
 	N    int         // unique N
 	V    interface{} // value
-	from int
+	From int
+	Done int // done seq number
 }
 type HandlerReply struct {
 	Res  string      // either REJECT or OK
@@ -193,12 +194,15 @@ func (px *Paxos) PiggyBack(from int, done int) {
 // Prepare(N) --> RPC to all peers including self
 func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 	// build args
-	arg := &HandlerArg{prepare, seq, N, "", px.me}
 	acks := 0 // count of majority of acks received from acceptor
 	nPeers := len(px.peers)
 	highestNa := 0
 	var highestVa interface{}
 	for i, p := range px.peers {
+		arg := &HandlerArg{prepare, seq, N, "", px.me, px.done[px.me]}
+		if _, exist := px.done[px.me]; !exist {
+			arg = &HandlerArg{prepare, seq, N, "", px.me, -1}
+		}
 		var reply HandlerReply
 		// log.Println("SendPrepare: Sending Prepare to Acceptor:", p)
 		var ok bool
@@ -238,10 +242,13 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 
 func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 	// build args
-	arg := &HandlerArg{accept, seq, N, V, px.me}
 	acks := 0 // count of majority of acks received from acceptor
 	nPeers := len(px.peers)
 	for i, p := range px.peers {
+		arg := &HandlerArg{accept, seq, N, V, px.me, px.done[px.me]}
+		if _, exist := px.done[px.me]; !exist {
+			arg = &HandlerArg{accept, seq, N, V, px.me, -1}
+		}
 		var reply HandlerReply
 		var ok bool
 		if i == px.me {
@@ -257,16 +264,6 @@ func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 		}
 		// log.Printf("SendAccept: Determining majority %v/%v for seq=%v \n", acks, nPeers, seq)
 		if acks > nPeers/2 { // if majority, return OK
-			// log.Println("SendAccept: Majority received")
-			// Consensus reached, update values
-			// px.mu.Lock()
-			// if px.done[px.me] < seq {
-			// 	px.done[px.me] = seq
-			// }
-			// instance := px.instances[seq]
-			// instance.value = V
-			// px.instances[seq] = instance
-			// px.mu.Unlock()
 			return AcceptOK{true, N}
 		}
 	}
@@ -277,10 +274,13 @@ func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 func (px *Paxos) SendDecide(Va interface{}, seq int) {
 	// log.Printf("SendDecide: Received request from seq=%v", seq)
 	// Send <DECIDE, Va> to all replicas
-	arg := &HandlerArg{decide, seq, 0, Va, px.me} // 0 not used
 	for i, p := range px.peers {
 		// log.Printf("SendDecide: Spawning go thread for seq=%v with i=%v, p=%v, me=%v\n", seq, i, p, px.me)
 		go func(i int, p string) {
+			arg := &HandlerArg{decide, seq, 0, Va, px.me, px.done[px.me]} // 0 not used
+			if _, exist := px.done[px.me]; !exist {                       // set to -1 if not exist
+				arg = &HandlerArg{decide, seq, 0, Va, px.me, -1}
+			}
 			var reply HandlerReply
 			var ok bool
 			// Don't have to wait to receive decide_ok (https://edstem.org/us/courses/19078/discussion/1215100)
@@ -304,10 +304,11 @@ func (px *Paxos) SendDecide(Va interface{}, seq int) {
 }
 
 func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
-	px.mu.Lock()
-	defer px.mu.Unlock()
 	// log.Printf("Acceptor: Received req from proposer arg=%v\n", args)
 	// each paxos peer should tell each other peer the highest Done argument supplied by local app
+	px.PiggyBack(args.From, args.Done) // piggyback
+	px.mu.Lock()
+	defer px.mu.Unlock()
 	reply.From = px.me
 	if done, exist := px.done[px.me]; exist { // send done value back to proposer
 		reply.Done = done
@@ -358,7 +359,7 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 		px.instances[args.Seq] = instance
 		reply.Res = OK
 	}
-	log.Printf("Acceptor: me=%v reply to %v with done=%v", px.me, args.from, reply.Done)
+	log.Printf("Acceptor: me=%v reply to %v with done=%v", px.me, args.From, reply.Done)
 	return nil
 }
 
