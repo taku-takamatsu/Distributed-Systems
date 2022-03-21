@@ -115,7 +115,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 	if err != nil {
 		err1 := err.(*net.OpError)
 		if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-			log.Printf("paxos Dial() failed: %v\n", err1)
+			// log.Printf("paxos Dial() failed: %v\n", err1)
 		}
 		return false
 	}
@@ -126,7 +126,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	log.Println(err)
+	// log.Println("Paxos:", err)
 	return false
 }
 
@@ -173,7 +173,8 @@ func (px *Paxos) Proposer(seq int, v interface{}) error {
 		decided, _ = px.Status(seq)
 		if !decided {
 			// if not decided, we'll retry with random backoff
-			time.Sleep(time.Duration(rand.Int63()%200) * time.Millisecond)
+			// log.Printf("Paxos: random backoff for me=%v", px.me)
+			time.Sleep(time.Duration(rand.Int63()%100) * time.Millisecond)
 		}
 	}
 	// log.Println("Proposer: returned")
@@ -320,7 +321,6 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 	} else {
 		reply.Done = -1
 	}
-
 	// current instance
 	instance := px.instances[args.Seq]
 	if args.Req == prepare { // PHASE 1
@@ -467,7 +467,7 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
 	defer px.mu.Unlock()
 	v, exist := px.instances[seq]
 	if exist && v.value != nil { // any decided instance for this peer will have a value
-		// log.Printf("Status: seq=%v for px=%v found\n", seq, px.me)
+		// log.Printf("Paxos; Status: seq=%v for px=%v decided=%v\n", seq, px.me, px.done)
 		return true, v.value
 	}
 	return false, nil
