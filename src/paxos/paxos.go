@@ -179,6 +179,8 @@ func (px *Paxos) Proposer(seq int, v interface{}) error {
 				decided = true
 
 			} else {
+				// if reject => acceptor responds with Np
+				// use that to propose the next round
 				px.mu.Lock()
 				// log.Printf("Proposer: Accept rejected Np=%v", acceptRes.N)
 				if n < acceptRes.N {
@@ -186,9 +188,9 @@ func (px *Paxos) Proposer(seq int, v interface{}) error {
 				}
 				px.mu.Unlock()
 			}
+		} else {
 			// if reject => acceptor responds with Np
 			// use that to propose the next round
-		} else {
 			px.mu.Lock()
 			// log.Printf("Proposer: Prepare rejected Np=%v", prepareRes.N)
 			if n < prepareRes.N {
