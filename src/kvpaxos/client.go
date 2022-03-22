@@ -1,11 +1,10 @@
 package kvpaxos
 
 import (
-	"crypto/rand"
 	"fmt"
 	"log"
-	"math/big"
 	"net/rpc"
+	"sync"
 	"time"
 )
 
@@ -14,22 +13,16 @@ type Clerk struct {
 	// You will have to modify this struct.
 	replica int
 	me      int64
+	mu      sync.Mutex // to ensure that client has only one outstanding get or put
 }
 
 func MakeClerk(servers []string) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
-	ck.replica = 0  // index of the replica
-	ck.me = nrand() // random number assigned to client
+	ck.replica = 0 // index of the replica
+	ck.me = nrand()
 	return ck
-}
-
-func nrand() int64 {
-	max := big.NewInt(int64(1) << 62)
-	bigx, _ := rand.Int(rand.Reader, max)
-	x := bigx.Int64()
-	return x
 }
 
 //
@@ -83,7 +76,8 @@ func (ck *Clerk) GetServer() string {
 // keeps trying forever in the face of all other errors.
 //
 func (ck *Clerk) Get(key string) string {
-	// You will have to modify this function.
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
 	args := GetArgs{key, nrand(), ck.me}
 	var reply GetReply
 	log.Printf("Client: GET k=%v, id=%v", args.Key, args.Id)
@@ -91,10 +85,10 @@ func (ck *Clerk) Get(key string) string {
 	for !ok || (reply.Err != OK && reply.Err != ErrNoKey) {
 		log.Printf("Client: GET; retrying... id=%v", args.Id)
 		time.Sleep(100 * time.Millisecond)
-		var reply GetReply
+		// var reply GetReply
 		ok = call(ck.GetServer(), "KVPaxos.Get", args, &reply)
 	}
-	log.Printf("Client: GET done id=%v, value=%v", args.Id, reply.Value)
+	log.Printf("Client: GET done id=%v, k=%v", args.Id, args.Key)
 	return reply.Value
 }
 
@@ -103,18 +97,19 @@ func (ck *Clerk) Get(key string) string {
 // keeps trying until it succeeds.
 //
 func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
-	// You will have to modify this function.
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
 	args := PutArgs{key, value, dohash, nrand(), ck.me}
 	var reply PutReply
-	log.Printf("Client: PUT k=%v v=%v dohash=%v, id=%v", args.Key, args.Value, args.DoHash, args.Id)
+	log.Printf("Client: PUT k=%v dohash=%v, id=%v", args.Key, args.DoHash, args.Id)
 	ok := call(ck.GetServer(), "KVPaxos.Put", args, &reply)
 	for !ok || reply.Err != OK {
 		log.Printf("Client: PUT; ok=%v, reply=%v; retrying... id=%v", ok, reply, args.Id)
 		time.Sleep(100 * time.Millisecond)
-		var reply PutReply
+		// var reply PutReply
 		ok = call(ck.GetServer(), "KVPaxos.Put", args, &reply)
 	}
-	log.Printf("Client: PUT done reply=%v, id=%v", reply, args.Id)
+	log.Printf("Client: PUT done k=%v, prevVal=%v, id=%v", args.Key, args.Value, args.Id)
 	return reply.PreviousValue
 }
 

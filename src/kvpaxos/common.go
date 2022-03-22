@@ -1,6 +1,11 @@
 package kvpaxos
 
-import "hash/fnv"
+import (
+	"crypto/rand"
+	"hash/fnv"
+	"math/big"
+	"time"
+)
 
 const (
 	OK       = "OK"
@@ -42,15 +47,20 @@ type GetReply struct {
 	Value string
 }
 
-type State struct {
-	Id    int64
-	Name  string
-	Value string
-	Err   Err
-}
-
 func hash(s string) uint32 {
 	h := fnv.New32a()
 	h.Write([]byte(s))
 	return h.Sum32()
+}
+
+func nrand() int64 {
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := rand.Int(rand.Reader, max)
+	x := bigx.Int64()
+	return x
+}
+
+func currTime() int64 {
+	// https://golangbyexample.com/current-timestamp-in-golang/
+	return time.Now().UnixNano()
 }
