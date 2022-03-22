@@ -39,11 +39,6 @@ type Op struct {
 	Val      string
 }
 
-type State struct {
-	Id  int64
-	Seq int
-}
-
 type KVPaxos struct {
 	mu         sync.Mutex
 	l          net.Listener
@@ -68,7 +63,6 @@ type KVPaxos struct {
 // A reasonable way to to this is to call Start(), which will either discover the previously agreed-to value,
 // or cause agreement to happen. Think about what value would be reasonable to pass to Start() in this situation.
 //
-
 func (kv *KVPaxos) Wait(seq int) Op {
 	to := 10 * time.Millisecond
 	for { // keep trying
