@@ -1,19 +1,27 @@
 package kvpaxos
 
-import "net/rpc"
-import "fmt"
+import (
+	"fmt"
+	"net/rpc"
+	"sync"
+	"time"
+)
 
 type Clerk struct {
-  servers []string
-  // You will have to modify this struct.
+	servers []string
+	// You will have to modify this struct.
+	replica int
+	me      int64
+	mu      sync.Mutex // to ensure that client has only one outstanding get or put
 }
 
-
 func MakeClerk(servers []string) *Clerk {
-  ck := new(Clerk)
-  ck.servers = servers
-  // You'll have to add code here.
-  return ck
+	ck := new(Clerk)
+	ck.servers = servers
+	// You'll have to add code here.
+	ck.replica = 0 // index of the replica
+	ck.me = nrand()
+	return ck
 }
 
 //
@@ -33,20 +41,32 @@ func MakeClerk(servers []string) *Clerk {
 // please don't change this function.
 //
 func call(srv string, rpcname string,
-          args interface{}, reply interface{}) bool {
-  c, errx := rpc.Dial("unix", srv)
-  if errx != nil {
-    return false
-  }
-  defer c.Close()
-    
-  err := c.Call(rpcname, args, reply)
-  if err == nil {
-    return true
-  }
+	args interface{}, reply interface{}) bool {
+	c, errx := rpc.Dial("unix", srv)
+	if errx != nil {
+		return false
+	}
+	defer c.Close()
 
-  fmt.Println(err)
-  return false
+	err := c.Call(rpcname, args, reply)
+	if err == nil {
+		return true
+	}
+
+	fmt.Println(err)
+	return false
+}
+
+//
+// Try each server consecutively
+//
+func (ck *Clerk) GetServer() string {
+	s := ck.servers[ck.replica]
+	ck.replica++
+	if ck.replica >= len(ck.servers) {
+		ck.replica = 0
+	}
+	return s
 }
 
 //
@@ -55,8 +75,20 @@ func call(srv string, rpcname string,
 // keeps trying forever in the face of all other errors.
 //
 func (ck *Clerk) Get(key string) string {
-  // You will have to modify this function.
-  return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	args := GetArgs{key, nrand(), ck.me}
+	var reply GetReply
+	// log.Printf("Client: GET k=%v, id=%v", args.Key, args.Id)
+	ok := call(ck.GetServer(), "KVPaxos.Get", args, &reply)
+	for !ok || (reply.Err != OK && reply.Err != ErrNoKey) {
+		// log.Printf("Client: GET; retrying... id=%v", args.Id)
+		time.Sleep(100 * time.Millisecond)
+		// var reply GetReply
+		ok = call(ck.GetServer(), "KVPaxos.Get", args, &reply)
+	}
+	// log.Printf("Client: GET done id=%v, k=%v", args.Id, args.Key)
+	return reply.Value
 }
 
 //
@@ -64,14 +96,26 @@ func (ck *Clerk) Get(key string) string {
 // keeps trying until it succeeds.
 //
 func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
-  // You will have to modify this function.
-  return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	args := PutArgs{key, value, dohash, nrand(), ck.me}
+	var reply PutReply
+	// log.Printf("Client: PUT k=%v dohash=%v, id=%v", args.Key, args.DoHash, args.Id)
+	ok := call(ck.GetServer(), "KVPaxos.Put", args, &reply)
+	for !ok || reply.Err != OK {
+		// log.Printf("Client: PUT; ok=%v, reply=%v; retrying... id=%v", ok, reply, args.Id)
+		time.Sleep(100 * time.Millisecond)
+		// var reply PutReply
+		ok = call(ck.GetServer(), "KVPaxos.Put", args, &reply)
+	}
+	// log.Printf("Client: PUT done k=%v, prevVal=%v, id=%v", args.Key, args.Value, args.Id)
+	return reply.PreviousValue
 }
 
 func (ck *Clerk) Put(key string, value string) {
-  ck.PutExt(key, value, false)
+	ck.PutExt(key, value, false)
 }
 func (ck *Clerk) PutHash(key string, value string) string {
-  v := ck.PutExt(key, value, true)
-  return v
+	v := ck.PutExt(key, value, true)
+	return v
 }
