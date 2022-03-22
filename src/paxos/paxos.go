@@ -115,7 +115,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 	if err != nil {
 		err1 := err.(*net.OpError)
 		if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-			log.Printf("paxos Dial() failed: %v\n", err1)
+			// log.Printf("paxos Dial() failed: %v\n", err1)
 		}
 		return false
 	}
@@ -126,7 +126,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	log.Println(err)
+	// log.Println("Paxos:", err)
 	return false
 }
 
@@ -138,6 +138,10 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 // is reached.
 //
 func (px *Paxos) Start(seq int, v interface{}) {
+	// If Start() is called with a sequence number less than Min(), the Start() call should be ignored.
+	if seq < px.Min() {
+		return
+	}
 	// Start a proposer function in it's own thread for each instance, as needed (e.g. in Start()
 	go func() {
 		px.Proposer(seq, v)
@@ -147,14 +151,19 @@ func (px *Paxos) Start(seq int, v interface{}) {
 func (px *Paxos) Proposer(seq int, v interface{}) error {
 	// log.Printf("Proposer: Called with seq=%v, current min=%v, \n", seq, px.Min())
 	// get the corresponding instance
-	for decided, _ := px.Status(seq); !decided && !px.dead; { // while not decided and proposer not dead:
+	px.mu.Lock()
+	px.propNum = -1 // first round will be 0
+	px.mu.Unlock()
+	decided := false
+	for !decided && !px.dead { // while not decided and proposer not dead:
 		//  choose n, unique and higher than any n seen so far
 		px.mu.Lock()
 		px.propNum++ // highest round number seen globally
+		// Note: highest number seen for that instance
 		n := px.propNum + px.me
 		px.mu.Unlock()
 		//  send prepare(n) to all servers including self
-		// log.Printf("Proposer: Send Prepare with n=%v, seq=%v \n", n, seq)
+		// log.Printf("Proposer: Send Prepare with propNum=%v, n=%v, seq=%v \n", px.propNum, n, seq)
 		prepareRes := px.SendPrepare(n, v, seq)
 		if prepareRes.OK { // wait until majority of acceptors return PROPOSE-OK responses
 			//  if prepare_ok(n_a, v_a) from majority:
@@ -166,17 +175,34 @@ func (px *Paxos) Proposer(seq int, v interface{}) error {
 			if acceptRes.OK {
 				// send decided(v') to all
 				// log.Printf("Proposer: Send Decide seq=%v\n", seq)
-				px.SendDecide(prepareRes.V, seq) // no response, doesn't need to wait
+				px.SendDecide(acceptRes.N, prepareRes.V, seq) // no response, doesn't need to wait
+				decided = true
+
+			} else {
+				px.mu.Lock()
+				// log.Printf("Proposer: Accept rejected Np=%v", acceptRes.N)
+				if n < acceptRes.N {
+					px.propNum = acceptRes.N
+				}
+				px.mu.Unlock()
 			}
+			// if reject => acceptor responds with Np
+			// use that to propose the next round
+		} else {
+			px.mu.Lock()
+			// log.Printf("Proposer: Prepare rejected Np=%v", prepareRes.N)
+			if n < prepareRes.N {
+				px.propNum = prepareRes.N
+			}
+			px.mu.Unlock()
 		}
-		// retry decided arg
-		decided, _ = px.Status(seq)
 		if !decided {
 			// if not decided, we'll retry with random backoff
-			time.Sleep(time.Duration(rand.Int63()%200) * time.Millisecond)
+			// log.Printf("Paxos: random backoff for me=%v, seq=%v", px.me, seq)
+			time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
 		}
 	}
-	// log.Println("Proposer: returned")
+	// log.Printf("Proposer DONE me=%v, seq=%v", px.me, seq)
 	return nil
 }
 
@@ -209,6 +235,7 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 	acks := 0 // count of majority of acks received from acceptor
 	nPeers := len(px.peers)
 	highestNa := 0
+	rejectNp := 0
 	var highestVa interface{}
 	for i, p := range px.peers {
 		arg.Done = px.GetDone() // update done value
@@ -232,6 +259,8 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 				highestVa = reply.V // Va
 			}
 			acks++
+		} else {
+			rejectNp = reply.N
 		}
 		// log.Printf("SendAccept: Determining majority %v/%v for seq=%v \n", acks, nPeers, seq)
 		if acks > nPeers/2 { // if majority, return OK
@@ -246,7 +275,7 @@ func (px *Paxos) SendPrepare(N int, v interface{}, seq int) PrepareOK {
 		}
 	}
 	// log.Printf("SendPrepare: ERROR couldn't get majority")
-	return PrepareOK{false, 0, nil}
+	return PrepareOK{false, rejectNp, nil}
 }
 
 func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
@@ -278,10 +307,10 @@ func (px *Paxos) SendAccept(N int, V interface{}, seq int) AcceptOK {
 	return AcceptOK{false, N}
 }
 
-func (px *Paxos) SendDecide(Va interface{}, seq int) {
+func (px *Paxos) SendDecide(N int, Va interface{}, seq int) {
 	// log.Printf("SendDecide: Received request from seq=%v", seq)
 	// Send <DECIDE, Va> to all replicas
-	arg := &HandlerArg{decide, seq, 0, Va, px.me, -1} // 0 not used
+	arg := &HandlerArg{decide, seq, N, Va, px.me, -1} // 0 not used
 	for i, p := range px.peers {
 		// log.Printf("SendDecide: Spawning go thread for seq=%v with i=%v, p=%v, me=%v\n", seq, i, p, px.me)
 		go func(i int, p string) {
@@ -320,7 +349,6 @@ func (px *Paxos) Acceptor(args *HandlerArg, reply *HandlerReply) error {
 	} else {
 		reply.Done = -1
 	}
-
 	// current instance
 	instance := px.instances[args.Seq]
 	if args.Req == prepare { // PHASE 1
@@ -440,11 +468,18 @@ func (px *Paxos) Forget(min int) {
 	// given min value, each peer should discard instances <= min()
 	px.mu.Lock()
 	defer px.mu.Unlock()
+	// var m0 runtime.MemStats
+	// runtime.ReadMemStats(&m0)
 	for seq, _ := range px.instances {
 		if seq <= min {
 			delete(px.instances, seq)
 		}
 	}
+	// var m1 runtime.MemStats
+	// runtime.ReadMemStats(&m1)
+	// if m0.Alloc != m1.Alloc {
+	// 	log.Printf("Paxos: Forget Memory before=%v after=%v, min=%v", m0.Alloc, m1.Alloc, min)
+	// }
 	// log.Printf("Forget: me=%v, px.done=%v", px.me, px.done)
 }
 
@@ -467,7 +502,7 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
 	defer px.mu.Unlock()
 	v, exist := px.instances[seq]
 	if exist && v.value != nil { // any decided instance for this peer will have a value
-		// log.Printf("Status: seq=%v for px=%v found\n", seq, px.me)
+		// log.Printf("Paxos; Status: seq=%v for px=%v decided=%v\n", seq, px.me, px.done)
 		return true, v.value
 	}
 	return false, nil
