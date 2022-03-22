@@ -2,7 +2,6 @@ package kvpaxos
 
 import (
 	"fmt"
-	"log"
 	"net/rpc"
 	"sync"
 	"time"
@@ -54,7 +53,7 @@ func call(srv string, rpcname string,
 		return true
 	}
 
-	fmt.Println("Kvpaxos error:", err)
+	fmt.Println(err)
 	return false
 }
 
@@ -80,15 +79,15 @@ func (ck *Clerk) Get(key string) string {
 	defer ck.mu.Unlock()
 	args := GetArgs{key, nrand(), ck.me}
 	var reply GetReply
-	log.Printf("Client: GET k=%v, id=%v", args.Key, args.Id)
+	// log.Printf("Client: GET k=%v, id=%v", args.Key, args.Id)
 	ok := call(ck.GetServer(), "KVPaxos.Get", args, &reply)
 	for !ok || (reply.Err != OK && reply.Err != ErrNoKey) {
-		log.Printf("Client: GET; retrying... id=%v", args.Id)
+		// log.Printf("Client: GET; retrying... id=%v", args.Id)
 		time.Sleep(100 * time.Millisecond)
 		// var reply GetReply
 		ok = call(ck.GetServer(), "KVPaxos.Get", args, &reply)
 	}
-	log.Printf("Client: GET done id=%v, k=%v", args.Id, args.Key)
+	// log.Printf("Client: GET done id=%v, k=%v", args.Id, args.Key)
 	return reply.Value
 }
 
@@ -101,15 +100,15 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
 	defer ck.mu.Unlock()
 	args := PutArgs{key, value, dohash, nrand(), ck.me}
 	var reply PutReply
-	log.Printf("Client: PUT k=%v dohash=%v, id=%v", args.Key, args.DoHash, args.Id)
+	// log.Printf("Client: PUT k=%v dohash=%v, id=%v", args.Key, args.DoHash, args.Id)
 	ok := call(ck.GetServer(), "KVPaxos.Put", args, &reply)
 	for !ok || reply.Err != OK {
-		log.Printf("Client: PUT; ok=%v, reply=%v; retrying... id=%v", ok, reply, args.Id)
+		// log.Printf("Client: PUT; ok=%v, reply=%v; retrying... id=%v", ok, reply, args.Id)
 		time.Sleep(100 * time.Millisecond)
 		// var reply PutReply
 		ok = call(ck.GetServer(), "KVPaxos.Put", args, &reply)
 	}
-	log.Printf("Client: PUT done k=%v, prevVal=%v, id=%v", args.Key, args.Value, args.Id)
+	// log.Printf("Client: PUT done k=%v, prevVal=%v, id=%v", args.Key, args.Value, args.Id)
 	return reply.PreviousValue
 }
 

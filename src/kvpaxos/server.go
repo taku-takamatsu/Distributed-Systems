@@ -87,7 +87,7 @@ func (kv *KVPaxos) Wait(seq int) Op {
 }
 
 func (kv *KVPaxos) StartPaxosAgreement(op Op) (string, bool) {
-	log.Printf("StartPaxosAgreement: me=%v, seq=%v, id=%v, clientId=%v", kv.me, kv.logSeq+1, op.Id, op.ClientId)
+	// log.Printf("StartPaxosAgreement: me=%v, seq=%v, id=%v, clientId=%v", kv.me, kv.logSeq+1, op.Id, op.ClientId)
 	// update local log/state from last recorded seq num
 	// loop from last seen seq number to next available Paxos instance
 	for {
@@ -128,7 +128,7 @@ func (kv *KVPaxos) StartPaxosAgreement(op Op) (string, bool) {
 		if op.Id == newOp.Id { // decided value has same id as op
 			// we're up to date, so return
 			// for PutHash, this would equate to the previous value
-			log.Printf("Server: Decided id=%v, seq=%v, val=%v", op.Id, seq, currValue)
+			// log.Printf("Server: Decided id=%v, seq=%v, val=%v", op.Id, seq, currValue)
 			return currValue, true
 		}
 	}
@@ -140,10 +140,10 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	log.Printf("Server: GET k=%v, id=%v, me=%v", args.Key, args.Id, kv.me)
+	// log.Printf("Server: GET k=%v, id=%v, me=%v", args.Key, args.Id, kv.me)
 	// start Paxos agreement
 	op := Op{args.Id, args.ClientId, 0, GET, args.Key, ""}
-	log.Printf("Server: GET Starting Paxos Agreement me=%v from seq=%v", kv.me, kv.logSeq+1)
+	// log.Printf("Server: GET Starting Paxos Agreement me=%v from seq=%v", kv.me, kv.logSeq+1)
 	value, ok := kv.StartPaxosAgreement(op) // returns the seq number that it agreed to
 	if !ok {
 		return nil // maybe Paxos error? - let client retry
@@ -152,14 +152,14 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	reply.Value = value
 	reply.Err = OK
 
-	log.Printf("Server: GET successful k=%v me=%v", args.Key, kv.me)
+	// log.Printf("Server: GET successful k=%v me=%v", args.Key, kv.me)
 	return nil
 }
 
 func (kv *KVPaxos) Put(args *PutArgs, reply *PutReply) error {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	log.Printf("Server: PUT k=%v, dohash=%v, id=%v, me=%v", args.Key, args.DoHash, args.Id, kv.me)
+	// log.Printf("Server: PUT k=%v, dohash=%v, id=%v, me=%v", args.Key, args.DoHash, args.Id, kv.me)
 
 	// at most once semantic
 	// note: only one outstanding put/get for a given client
@@ -173,7 +173,7 @@ func (kv *KVPaxos) Put(args *PutArgs, reply *PutReply) error {
 			reply.PreviousValue = kv.previous[args.ClientId]
 		}
 		reply.Err = OK
-		log.Printf("SERVER: Duplicate PUT request id=%v, prevErr=%v", args.Id, reply.Err)
+		// log.Printf("SERVER: Duplicate PUT request id=%v, prevErr=%v", args.Id, reply.Err)
 		return nil
 	}
 
@@ -185,7 +185,7 @@ func (kv *KVPaxos) Put(args *PutArgs, reply *PutReply) error {
 		op = Op{args.Id, args.ClientId, 0, PUT, args.Key, args.Value}
 	}
 
-	log.Printf("Server: PUT Starting Paxos Agreement me=%v from seq=%v", kv.me, kv.logSeq+1)
+	// log.Printf("Server: PUT Starting Paxos Agreement me=%v from seq=%v", kv.me, kv.logSeq+1)
 	// Start Paxos agreement
 	value, ok := kv.StartPaxosAgreement(op) // returns previous value (if PutHash)
 	if !ok {
@@ -195,7 +195,7 @@ func (kv *KVPaxos) Put(args *PutArgs, reply *PutReply) error {
 	reply.Err = OK
 	reply.PreviousValue = value // value != "" if PutHash
 
-	log.Printf("Server: PUT successful k=%v, v=%v, me=%v, id=%v, clientId=%v", args.Key, value, kv.me, args.Id, args.ClientId)
+	// log.Printf("Server: PUT successful k=%v, v=%v, me=%v, id=%v, clientId=%v", args.Key, value, kv.me, args.Id, args.ClientId)
 	return nil
 }
 
