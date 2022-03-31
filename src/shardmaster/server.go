@@ -79,7 +79,7 @@ func (sm *ShardMaster) Wait(seq int) Op {
 }
 
 func (sm *ShardMaster) UpdateLog(op Op) Config {
-	log.Printf("UpdateLog: op=%v", op)
+	// log.Printf("UpdateLog: op=%v", op)
 	currConfig := sm.configs[len(sm.configs)-1] // current Config
 	config := Config{}                          // create new Config
 
@@ -164,19 +164,19 @@ func (sm *ShardMaster) UpdateLog(op Op) Config {
 		// update the shards based on the counts; no need to rebalance
 		config.Shards = sm.UpdateShards(counts, currConfig.Shards)
 	}
-	log.Printf("UpdateLog: Done with name=%v, config=%v", op.Name, config)
+	// log.Printf("UpdateLog: Done with name=%v, config=%v", op.Name, config)
 	// apply change
 	sm.configs = append(sm.configs, config)
 	return config
 }
 
 // start Paxos agreement with the Op
-func (sm *ShardMaster) PaxosAgreement(op Op) (bool, Config) {
+func (sm *ShardMaster) PaxosAgreement(op Op) bool {
 	// log.Printf("StartPaxosAgreement: me=%v, seq=%v, id=%v, clientId=%v", sm.me, sm.logSeq+1, op.Id, op.ClientId)
 	for {
 		seq := sm.logSeq + 1
 		if sm.dead {
-			return false, Config{}
+			return false
 		}
 		var newOp Op
 		// log.Printf("StartPaxos: calling status on seq=%v, me=%v", seq, sm.me)
@@ -191,7 +191,7 @@ func (sm *ShardMaster) PaxosAgreement(op Op) (bool, Config) {
 			newOp = sm.Wait(seq)
 		}
 
-		log.Printf("StartPaxos: Decided id=%v, name=%v, seq=%v, me=%v", newOp.Id, newOp.Name, newOp.Seq, sm.me)
+		// log.Printf("StartPaxos: Decided id=%v, name=%v, seq=%v, me=%v", newOp.Id, newOp.Name, newOp.Seq, sm.me)
 		if newOp.Name != QUERY {
 			// Query should not update log,
 			// just ensure all JOIN, LEAVE, MOVE are up-to-date
@@ -205,7 +205,7 @@ func (sm *ShardMaster) PaxosAgreement(op Op) (bool, Config) {
 			// we're up to date, so return
 			// for PutHash, this would equate to the previous value
 			// log.Printf("Server: Decided id=%v, seq=%v, val=%v", op.Id, seq, currValue)
-			return true, newOp.Config
+			return true
 		}
 	}
 }
@@ -273,7 +273,7 @@ func (sm *ShardMaster) Rebalance(
 
 	// update global shard counts
 	sm.gidToShards = counts
-	log.Printf("Rebalance: Done gidToShards=%v, newShards=%v", sm.gidToShards, newShards)
+	// log.Printf("Rebalance: Done gidToShards=%v, newShards=%v", sm.gidToShards, newShards)
 	return sm.UpdateShards(counts, newShards)
 }
 
@@ -287,18 +287,18 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
 	// Server: ports[]
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	log.Printf("Join: received with GID=%v, Servers=%v", args.GID, args.Servers)
+	// log.Printf("Join: received with GID=%v, Servers=%v", args.GID, args.Servers)
 
 	op := Op{
 		Id:   nrand(),
 		Name: JOIN,
 		Args: OpArg{JoinArgs: args}}
-	ok, config := sm.PaxosAgreement(op)
+	ok := sm.PaxosAgreement(op)
 	if !ok {
 		return nil
 	}
 
-	log.Printf("Join: New Config=%v", config)
+	// log.Printf("Join: New Config=%v", config)
 	return nil
 }
 
@@ -310,18 +310,18 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	log.Printf("Leave: received with GID=%v, me=%v", args.GID, sm.me)
+	// log.Printf("Leave: received with GID=%v, me=%v", args.GID, sm.me)
 	// Paxos
 	op := Op{
 		Id:   nrand(),
 		Name: LEAVE,
 		Args: OpArg{LeaveArgs: args}}
-	ok, config := sm.PaxosAgreement(op)
+	ok := sm.PaxosAgreement(op)
 	if !ok {
 		return nil
 	}
 
-	log.Printf("Leave: New Config=%v", config)
+	// log.Printf("Leave: New Config=%v", config)
 	return nil
 }
 
@@ -334,18 +334,18 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	log.Printf("Move: received with GID=%v, Shard=%v", args.GID, args.Shard)
+	// log.Printf("Move: received with GID=%v, Shard=%v", args.GID, args.Shard)
 	// run Paxos
 	op := Op{
 		Id:   nrand(),
 		Name: MOVE,
 		Args: OpArg{MoveArgs: args}}
-	ok, config := sm.PaxosAgreement(op)
+	ok := sm.PaxosAgreement(op)
 	if !ok {
 		return nil
 	}
 
-	log.Printf("Move: New Config=%v", config)
+	// log.Printf("Move: New Config=%v", config)
 	return nil
 }
 
@@ -357,13 +357,13 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	log.Printf("Query: received argnum=%v, me=%v", args.Num, sm.me)
+	// log.Printf("Query: received argnum=%v, me=%v", args.Num, sm.me)
 
 	op := Op{
 		Id:   nrand(),
 		Name: QUERY,
 		Args: OpArg{QueryArgs: args}}
-	ok, _ := sm.PaxosAgreement(op)
+	ok := sm.PaxosAgreement(op)
 	if !ok {
 		return nil
 	}
@@ -375,7 +375,7 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 		// reply with config of index
 		reply.Config = sm.configs[args.Num]
 	}
-	log.Printf("Query: returning config=%v, me=%v", reply.Config, sm.me)
+	// log.Printf("Query: returning config=%v, me=%v", reply.Config, sm.me)
 	return nil
 }
 
