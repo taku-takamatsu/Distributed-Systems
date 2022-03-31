@@ -24,11 +24,8 @@ type ShardMaster struct {
 	unreliable bool // for testing
 	px         *paxos.Paxos
 
-	configs     []Config // indexed by config num
-	gidToShards map[int64][]int64
-	configNum   int
-	logSeq      int
-	shardNum    int
+	configs []Config // indexed by config num
+	logSeq  int
 }
 
 func nrand() int64 {
@@ -84,8 +81,7 @@ func (sm *ShardMaster) UpdateLog(op Op) Config {
 	config := Config{}                          // create new Config
 
 	// Config.Num
-	config.Num = sm.configNum + 1
-	sm.configNum++
+	config.Num = len(sm.configs)
 
 	config.Groups = map[int64][]string{} // initialize
 	// rest will defer based on Op type
@@ -272,7 +268,6 @@ func (sm *ShardMaster) Rebalance(
 	}
 
 	// update global shard counts
-	sm.gidToShards = counts
 	// log.Printf("Rebalance: Done gidToShards=%v, newShards=%v", sm.gidToShards, newShards)
 	return sm.UpdateShards(counts, newShards)
 }
@@ -401,10 +396,6 @@ func StartServer(servers []string, me int) *ShardMaster {
 	sm.logSeq = -1
 	sm.configs = make([]Config, 1)
 	sm.configs[0].Groups = map[int64][]string{}
-	log.Printf("StartServer: %v", sm.configs)
-	sm.gidToShards = make(map[int64][]int64)
-	sm.configNum = 0
-	sm.shardNum = 0
 	rpcs := rpc.NewServer()
 	rpcs.Register(sm)
 
