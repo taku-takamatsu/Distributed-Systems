@@ -1,9 +1,11 @@
 package shardmaster
 
 import (
+	crand "crypto/rand" // rename as we have math/rand already
 	"encoding/gob"
 	"fmt"
 	"log"
+	"math/big"
 	"math/rand"
 	"net"
 	"net/rpc"
@@ -29,6 +31,13 @@ type ShardMaster struct {
 	shardNum    int
 }
 
+func nrand() int64 {
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := crand.Int(crand.Reader, max)
+	x := bigx.Int64()
+	return x
+}
+
 const (
 	JOIN  = "JOIN"
 	LEAVE = "LEAVE"
@@ -38,10 +47,18 @@ const (
 
 type Op struct {
 	// Your data here.
-	Id   int64       // Id set for each Operation
-	Seq  int         // Sequence Number
-	Name string      // JOIN, LEAVE, MOVE, QUERY
-	Args interface{} // JoinArgs, LeaveArgs, MoveArgs, QueryArgs
+	Id     int64  // Id set for each Operation
+	Seq    int    // Sequence Number
+	Name   string // JOIN, LEAVE, MOVE, QUERY
+	Args   OpArg  // JoinArgs, LeaveArgs, MoveArgs, QueryArgs
+	Config Config
+}
+
+type OpArg struct {
+	*JoinArgs
+	*LeaveArgs
+	*MoveArgs
+	*QueryArgs
 }
 
 func (sm *ShardMaster) Wait(seq int) Op {
@@ -61,13 +78,105 @@ func (sm *ShardMaster) Wait(seq int) Op {
 	}
 }
 
+func (sm *ShardMaster) UpdateLog(op Op) Config {
+	log.Printf("UpdateLog: op=%v", op)
+	currConfig := sm.configs[len(sm.configs)-1] // current Config
+	config := Config{}                          // create new Config
+
+	// Config.Num
+	config.Num = sm.configNum + 1
+	sm.configNum++
+
+	config.Groups = map[int64][]string{} // initialize
+	// rest will defer based on Op type
+	switch op.Name {
+	case JOIN:
+		args := op.Args.JoinArgs
+		// Config.Groups
+		// copy over all the current replica groups
+		for k, v := range currConfig.Groups {
+			config.Groups[k] = v
+		}
+		// append new servers to GID group
+		config.Groups[args.GID] = args.Servers
+
+		// Config.Shards
+		// determine how many shards in each replica
+		counts := make(map[int64][]int64)
+		counts[args.GID] = make([]int64, 0) // create empty k/v pair with the new GID
+		for s, g := range currConfig.Shards {
+			if g == 0 { // new shard; update
+				counts[args.GID] = append(counts[args.GID], int64(s))
+			} else { // existing shard; update count
+				counts[g] = append(counts[g], int64(s))
+			}
+		}
+		// pass in counts, new groups and old shard configuration
+		config.Shards = sm.Rebalance(counts, config.Groups, currConfig.Shards)
+	case LEAVE:
+		args := op.Args.LeaveArgs
+
+		for k, v := range currConfig.Groups {
+			if k != args.GID {
+				config.Groups[k] = v
+			}
+		}
+		// Config.Shards
+		counts := make(map[int64][]int64)
+		// get a random GID to assign the removed replica shards to
+		var temp int64
+		for _, g := range currConfig.Shards {
+			if g != args.GID {
+				temp = g
+				break
+			}
+		}
+		// update counts
+		for s, g := range currConfig.Shards {
+			if g != args.GID {
+				counts[g] = append(counts[g], int64(s))
+			} else { // if g == args.GID
+				// assign the removed groups shards to temp
+				counts[temp] = append(counts[temp], int64(s))
+			}
+		}
+
+		// pass in counts, new groups and old shard configuration
+		config.Shards = sm.Rebalance(counts, config.Groups, currConfig.Shards)
+	case MOVE:
+		args := op.Args.MoveArgs
+		// Config.Groups
+		// copy over all the current replica groups
+		for k, v := range currConfig.Groups {
+			config.Groups[k] = v
+		}
+		// Config.Shards
+		// determine how many shards in each replica
+		counts := make(map[int64][]int64)
+		for s, g := range currConfig.Shards {
+			if g == 0 || s == args.Shard { // MOVE
+				counts[args.GID] = append(counts[args.GID], int64(s))
+			} else { // existing shard; update count
+				counts[g] = append(counts[g], int64(s))
+			}
+		}
+
+		// update the shards based on the counts; no need to rebalance
+		config.Shards = sm.UpdateShards(counts, currConfig.Shards)
+	}
+	log.Printf("UpdateLog: Done with name=%v, config=%v", op.Name, config)
+	// apply change
+	sm.configs = append(sm.configs, config)
+	return config
+}
+
 // start Paxos agreement with the Op
-func (sm *ShardMaster) PaxosAgreement(op Op) string {
+func (sm *ShardMaster) PaxosAgreement(op Op) (bool, Config) {
 	// log.Printf("StartPaxosAgreement: me=%v, seq=%v, id=%v, clientId=%v", sm.me, sm.logSeq+1, op.Id, op.ClientId)
 	for {
 		seq := sm.logSeq + 1
 		if sm.dead {
-			return ""
+			return false, Config{}
 		}
 		var newOp Op
 		// log.Printf("StartPaxos: calling status on seq=%v, me=%v", seq, sm.me)
@@ -83,25 +192,21 @@ func (sm *ShardMaster) PaxosAgreement(op Op) string {
 		}
 
 		log.Printf("StartPaxos: Decided id=%v, name=%v, seq=%v, me=%v", newOp.Id, newOp.Name, newOp.Seq, sm.me)
-		// currValue := sm.data[newOp.Key] // if not exist, evalutes to "" (zero value of string type)
-		// if newOp.Name == PUT {
-		// 	sm.seenOps[newOp.Id] = true
-		// 	sm.data[newOp.Key] = newOp.Val
-		// } else if newOp.Name == PUTHASH {
-		// 	sm.previous[newOp.ClientId] = currValue
-		// 	sm.seenOps[newOp.Id] = true
-		// 	sm.data[newOp.Key] = strconv.Itoa(int(hash(currValue + newOp.Val))) // hash
-		// }
+		if newOp.Name != QUERY {
+			// Query should not update log,
+			// just ensure all JOIN, LEAVE, MOVE are up-to-date
+			newOp.Config = sm.UpdateLog(newOp)
+		}
 
 		sm.px.Done(seq) // this server is done with all instances <= seq
 		sm.logSeq++     // try next seq number
 
-		// if op.Id == newOp.Id { // decided value has same id as op
-		// 	// we're up to date, so return
-		// 	// for PutHash, this would equate to the previous value
-		// 	// log.Printf("Server: Decided id=%v, seq=%v, val=%v", op.Id, seq, currValue)
-		// 	return ""
-		// }
+		if op.Id == newOp.Id { // decided value has same id as op
+			// we're up to date, so return
+			// for PutHash, this would equate to the previous value
+			// log.Printf("Server: Decided id=%v, seq=%v, val=%v", op.Id, seq, currValue)
+			return true, newOp.Config
+		}
 	}
 }
 
@@ -110,10 +215,11 @@ func (sm *ShardMaster) PaxosAgreement(op Op) string {
 //
 func (sm *ShardMaster) MinMax(counts map[int64][]int64, groups map[int64][]string) (int64, int64) {
 	min := 257
-	var minShard int64
 	max := 0
+	var minShard int64
 	var maxShard int64
 	// log.Printf("MinMax: groups=%v\n", groups)
+	// idea from check() function from test_test.go
 	for g, _ := range groups {
 		if len(counts[g]) > max {
 			max = len(counts[g])
@@ -183,38 +289,15 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
 	defer sm.mu.Unlock()
 	log.Printf("Join: received with GID=%v, Servers=%v", args.GID, args.Servers)
 
-	currConfig := sm.configs[len(sm.configs)-1] // current Config
-	config := Config{}                          // create new Config
-
-	// Config.Num
-	config.Num = sm.configNum + 1
-	sm.configNum++
-
-	// Config.Groups
-	// copy over all the current replica groups
-	config.Groups = map[int64][]string{} // initialize
-	for k, v := range currConfig.Groups {
-		config.Groups[k] = v
+	op := Op{
+		Id:   nrand(),
+		Name: JOIN,
+		Args: OpArg{JoinArgs: args}}
+	ok, config := sm.PaxosAgreement(op)
+	if !ok {
+		return nil
 	}
-	// append new servers to GID group
-	config.Groups[args.GID] = args.Servers
 
-	// Config.Shards
-	// determine how many shards in each replica
-	counts := make(map[int64][]int64)
-	counts[args.GID] = make([]int64, 0) // create empty k/v pair with the new GID
-	for s, g := range currConfig.Shards {
-		if g == 0 { // new shard; update
-			counts[args.GID] = append(counts[args.GID], int64(s))
-		} else { // existing shard; update count
-			counts[g] = append(counts[g], int64(s))
-		}
-	}
-	// pass in counts, new groups and old shard configuration
-	config.Shards = sm.Rebalance(counts, config.Groups, currConfig.Shards)
-
-	// apply change
-	sm.configs = append(sm.configs, config)
 	log.Printf("Join: New Config=%v", config)
 	return nil
 }
@@ -228,48 +311,16 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	log.Printf("Leave: received with GID=%v, me=%v", args.GID, sm.me)
-
-	currConfig := sm.configs[len(sm.configs)-1] // current Config
-	config := Config{}                          // create new Config
-	log.Printf("Leave: currConfig=%v", currConfig)
-	// Config.Num
-	config.Num = sm.configNum + 1
-	sm.configNum++
-
-	// Config.Groups
-	// copy over all the current replica groups except the args.GID
-	config.Groups = map[int64][]string{} // initialize
-
-	for k, v := range currConfig.Groups {
-		if k != args.GID {
-			config.Groups[k] = v
-		}
+	// Paxos
+	op := Op{
+		Id:   nrand(),
+		Name: LEAVE,
+		Args: OpArg{LeaveArgs: args}}
+	ok, config := sm.PaxosAgreement(op)
+	if !ok {
+		return nil
 	}
 
-	// Config.Shards
-	// determine how many shards in previous replica group
-	counts := make(map[int64][]int64)
-	var temp int64
-	// get a random GID to assign the removed replica shards to
-	for _, g := range currConfig.Shards {
-		if g != args.GID {
-			temp = g
-			break
-		}
-	}
-	// update counts
-	for s, g := range currConfig.Shards {
-		if g != args.GID {
-			counts[g] = append(counts[g], int64(s))
-		} else {
-			// assign the removed groups shards to someone else
-			counts[temp] = append(counts[temp], int64(s))
-		}
-	}
-
-	// pass in counts, new groups and old shard configuration
-	config.Shards = sm.Rebalance(counts, config.Groups, currConfig.Shards)
-	sm.configs = append(sm.configs, config)
 	log.Printf("Leave: New Config=%v", config)
 	return nil
 }
@@ -284,37 +335,15 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	log.Printf("Move: received with GID=%v, Shard=%v", args.GID, args.Shard)
-	currConfig := sm.configs[len(sm.configs)-1] // current Config
-	config := Config{}                          // create new Config
-	log.Printf("Move: currConfig=%v", currConfig)
-
-	// Config.Num
-	config.Num = sm.configNum + 1
-	sm.configNum++
-
-	// Config.Groups
-	// copy over all the current replica groups except the args.GID
-	config.Groups = map[int64][]string{} // initialize
-	for k, v := range currConfig.Groups {
-		config.Groups[k] = v
+	// run Paxos
+	op := Op{
+		Id:   nrand(),
+		Name: MOVE,
+		Args: OpArg{MoveArgs: args}}
+	ok, config := sm.PaxosAgreement(op)
+	if !ok {
+		return nil
 	}
-
-	// Config.Shards
-	// determine how many shards in each replica
-	counts := make(map[int64][]int64)
-	for s, g := range currConfig.Shards {
-		if g == 0 || s == args.Shard { // MOVE
-			counts[args.GID] = append(counts[args.GID], int64(s))
-		} else { // existing shard; update count
-			counts[g] = append(counts[g], int64(s))
-		}
-	}
-	log.Printf("Move: counts=%v, config=%v", counts, config)
-
-	// update the shards; no need to rebalance
-	config.Shards = sm.UpdateShards(counts, currConfig.Shards)
-
-	sm.configs = append(sm.configs, config)
 
 	log.Printf("Move: New Config=%v", config)
 	return nil
@@ -329,6 +358,16 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	log.Printf("Query: received argnum=%v, me=%v", args.Num, sm.me)
+
+	op := Op{
+		Id:   nrand(),
+		Name: QUERY,
+		Args: OpArg{QueryArgs: args}}
+	ok, _ := sm.PaxosAgreement(op)
+	if !ok {
+		return nil
+	}
+
 	if args.Num == -1 || args.Num >= len(sm.configs) {
 		//reply with latest configuration
 		reply.Config = sm.configs[len(sm.configs)-1]
