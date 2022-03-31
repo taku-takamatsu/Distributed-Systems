@@ -3,7 +3,7 @@
 # go test -list . | grep -v ok | tr '\n' ' '
 
 # TestBasic TestUnreliable TestFreshQuery
-for t in TestFreshQuery TestUnreliable TestFreshQuery
+for t in TestBasic TestUnreliable TestFreshQuery
 do
   echo $t
   count=0
