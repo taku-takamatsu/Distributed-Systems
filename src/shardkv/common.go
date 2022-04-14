@@ -20,10 +20,10 @@ const (
 	OK            = "OK"
 	ErrNoKey      = "ErrNoKey"
 	ErrWrongGroup = "ErrWrongGroup"
-
-	PUT     = "PUT"
-	PUTHASH = "PUTHASH"
-	GET     = "GET"
+	TimeOut       = "TimeOut"
+	PUT           = "PUT"
+	PUTHASH       = "PUTHASH"
+	GET           = "GET"
 	// The recommended approach is to have each replica group
 	// use Paxos to log not only the sequence of Puts and Gets
 	// but also the sequence of reconfigurations.

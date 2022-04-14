@@ -3,11 +3,11 @@
 # go test -list . | grep -v ok | tr '\n' ' '
 
 # TestBasic TestMove TestLimp TestConcurrent TestConcurrentUnreliable
-for t in TestBasic # TestMove TestLimp TestConcurrent TestConcurrentUnreliable
+for t in TestBasic TestMove TestLimp TestConcurrent TestConcurrentUnreliable
 do
   echo $t
   count=0
-  n=50
+  n=100
   for i in $(seq 1 $n)
   do
     go test -run "^${t}$" -timeout 2m > ./log-${t}-${i}.log
