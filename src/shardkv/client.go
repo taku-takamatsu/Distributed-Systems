@@ -94,11 +94,13 @@ func (ck *Clerk) Get(key string) string {
 			for _, srv := range servers {
 				args := &GetArgs{key, Id, ck.clientId}
 				var reply GetReply
+				DPrintf("Client: GET k=%v gid=%v", key, gid)
 				ok := call(srv, "ShardKV.Get", args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					DPrintf("Client: GET ErrWrongGroup txId=%v", args.TxId)
 					break
 				}
 			}
@@ -130,11 +132,14 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
 			for _, srv := range servers {
 				args := &PutArgs{key, value, dohash, Id, ck.clientId}
 				var reply PutReply
+				DPrintf("Client: PUT k=%v v=%v gid=%v", key, value, gid)
 				ok := call(srv, "ShardKV.Put", args, &reply)
 				if ok && reply.Err == OK {
+					DPrintf("Client: PUT done txId=%v, prev=%v", Id, reply.PreviousValue)
 					return reply.PreviousValue
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					DPrintf("Client: PUT ErrWrongGroup txId=%v", args.TxId)
 					break
 				}
 			}
@@ -145,6 +150,7 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
 		// ask master for a new configuration.
 		ck.config = ck.sm.Query(-1)
 	}
+
 }
 
 func (ck *Clerk) Put(key string, value string) {

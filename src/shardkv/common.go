@@ -62,14 +62,10 @@ type GetReply struct {
 
 type ReConfigArgs struct {
 	TxId     int64
-	ClientId int64
-	From     string
 	SeenOps  map[int]map[int64]bool    // indexed by TxId
 	Previous map[int]map[int64]string  // indexed by ClientId
 	Data     map[int]map[string]string //kv
-	Gid      int64
 	Config   shardmaster.Config
-	MyShards map[int]bool
 }
 
 type ReConfigReply struct {
