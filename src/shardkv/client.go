@@ -1,7 +1,6 @@
 package shardkv
 
 import (
-	"fmt"
 	"net/rpc"
 	"shardmaster"
 	"sync"
@@ -44,7 +43,7 @@ func call(srv string, rpcname string,
 	args interface{}, reply interface{}) bool {
 	c, errx := rpc.Dial("unix", srv)
 	if errx != nil {
-		fmt.Println(errx)
+		DPrintf("%v", errx)
 		return false
 	}
 	defer c.Close()
@@ -54,7 +53,7 @@ func call(srv string, rpcname string,
 		return true
 	}
 
-	fmt.Println(err)
+	DPrintf("%v", err)
 	return false
 }
 

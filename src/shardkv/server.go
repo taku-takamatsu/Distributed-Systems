@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const Debug = 1
+const Debug = 0
 
 const TIMEOUT_DURATION = 1 // timeout of any infinite loops after 1 second
 
