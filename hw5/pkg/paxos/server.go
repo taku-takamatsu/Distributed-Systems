@@ -68,13 +68,153 @@ func NewServer(peers []base.Address, me int, proposedValue interface{}) *Server 
 
 func (server *Server) MessageHandler(message base.Message) []base.Node {
 	//TODO: implement it
-	panic("implement me")
+	newNodes := make([]base.Node, 0)
+	switch message.(type) {
+	case *ProposeRequest: // <PROPOSE, N> request
+		// maintains some state:
+		// Na: highest accepted proposal
+		// Va: value of highest accepted proposal
+		// Np: highest proposal number they've seen to date
+		msg := message.(*ProposeRequest)
+		if msg.N > server.n_p {
+			// update Np = N
+			// return <PROPOSE-OK, Na, Va>
+			newNode := server.copy() // copy current node
+			newNode.n_p = msg.N
+			response := &ProposeResponse{
+				CoreMessage: base.MakeCoreMessage(message.From(), message.To()),
+				Ok:          true, N_p: newNode.n_p, V_a: newNode.v_a}
+			newNode.SetSingleResponse(response)
+			newNodes = append(newNodes, newNode)
+		} else {
+			// return <REJECT, Np>
+			newNode := server.copy() // copy current node
+			response := &ProposeResponse{
+				CoreMessage: base.MakeCoreMessage(message.From(), message.To()),
+				Ok:          false, N_p: newNode.n_p}
+			newNode.SetSingleResponse(response)
+			newNodes = append(newNodes, newNode)
+		}
+	case *AcceptRequest: // <ACCEPT, N, V>
+		msg := message.(*AcceptRequest)
+		if msg.N >= server.n_p {
+			// update Np=N, Na=N, Va=V
+			newNode := server.copy()
+			newNode.n_p = msg.N
+			newNode.n_a = msg.N
+			newNode.v_a = msg.V
+			response := &AcceptResponse{
+				CoreMessage: base.MakeCoreMessage(message.From(), message.To()),
+				Ok:          true, N_p: msg.N}
+			newNode.SetSingleResponse(response)
+			newNodes = append(newNodes, newNode)
+		} else {
+			// <REJECT, Np>
+			newNode := server.copy()
+			response := &AcceptResponse{
+				CoreMessage: base.MakeCoreMessage(message.From(), message.To()),
+				Ok:          false, N_p: newNode.n_p}
+			newNode.SetSingleResponse(response)
+			newNodes = append(newNodes, newNode)
+		}
+	case *DecideRequest:
+		msg := message.(*DecideRequest)
+		newNode := server.copy()
+		newNode.agreedValue = msg.V
+		newNodes = append(newNodes, newNode)
+
+	case *ProposeResponse:
+		// handle ProposeResponse;
+		msg := message.(*ProposeResponse)
+		// first scenario: proposer receives majority OK
+		// determine highest-numbered proposal value
+
+		if msg.Ok { // if <PROPOSE, OK>
+			// Send <ACCEPT, N, V>
+			newNode := server.copy()
+			newNode.proposer.Phase = Accept
+			responses := make([]base.Message, 0)
+			for _, peer := range newNode.peers {
+				response := &AcceptRequest{
+					CoreMessage: base.MakeCoreMessage(message.From(), peer),
+					N:           msg.N_p,
+					V:           newNode.proposer.V,
+					SessionId:   newNode.proposer.SessionId} // choose V; highest-numbered proposal among those returned
+				responses = append(responses, response)
+			}
+			newNode.SetResponse(responses)
+			newNodes = append(newNodes, newNode)
+		}
+		// second scenario: waiting for rest of the responses
+		newNode := server.copy()
+		newNode.proposer.Phase = Propose
+		for i := 0; i < len(newNode.peers); i++ {
+			if msg.To() == newNode.peers[i] || msg.From() == newNode.peers[i] {
+				newNode.proposer.Responses[i] = true
+				newNode.proposer.SuccessCount++
+				newNode.proposer.ResponseCount++
+			}
+		}
+		newNodes = append(newNodes, newNode)
+	case *AcceptResponse: // handle AcceptResponse
+		msg := message.(*AcceptResponse)
+		// Scenario 1: ACCEPT-OK received from majority; prepare DECIDE
+		if msg.Ok {
+			newNode := server.copy()
+			newNode.proposer.Phase = Decide
+			// set decided value
+
+			newNode.n_p = msg.N_p
+			//newNode.proposer.N_a_max = newNode.n_a
+			responses := make([]base.Message, 0)
+			for _, peer := range newNode.peers {
+				response := &DecideRequest{
+					CoreMessage: base.MakeCoreMessage(message.From(), peer),
+					V:           newNode.proposer.V,
+					SessionId:   newNode.proposer.SessionId} // choose V; highest-numbered proposal among those returned
+				responses = append(responses, response)
+			}
+			newNode.SetResponse(responses)
+			newNodes = append(newNodes, newNode)
+		}
+		// second scenario: waiting for rest of the responses
+		newNode := server.copy()
+		newNode.proposer.Phase = Accept
+
+		for i := 0; i < len(newNode.peers); i++ {
+			if msg.To() == newNode.peers[i] || msg.From() == newNode.peers[i] {
+				// majority received, still waiting for others
+				newNode.proposer.Responses[i] = true
+				newNode.proposer.SuccessCount++
+				newNode.proposer.ResponseCount++
+			}
+		}
+		newNodes = append(newNodes, newNode)
+
+	}
+	return newNodes
 }
 
 // To start a new round of Paxos.
 func (server *Server) StartPropose() {
 	//TODO: implement it
-	panic("implement me")
+	// renew proposer's fields
+	server.proposer.N++
+	server.proposer.SessionId++
+	server.proposer.Phase = Propose
+	server.proposer.V = server.proposer.InitialValue
+	// then send ProposeRequest to all of it's peers
+
+	responses := make([]base.Message, 0)
+	from := server.peers[server.me]
+	for _, peer := range server.peers {
+		req := &ProposeRequest{
+			CoreMessage: base.MakeCoreMessage(from, peer),
+			N:           server.proposer.N,
+			SessionId:   server.proposer.SessionId}
+		responses = append(responses, req)
+	}
+	server.SetResponse(responses)
 }
 
 // Returns a deep copy of server node

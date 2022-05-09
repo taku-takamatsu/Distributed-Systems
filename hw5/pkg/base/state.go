@@ -3,6 +3,7 @@ package base
 import (
 	"encoding/binary"
 	"hash/fnv"
+	"log"
 	"math/rand"
 )
 
@@ -43,6 +44,7 @@ func NewState(depth int, isDropOff, isDuplicate bool) *State {
 }
 
 func (s *State) AddNode(address Address, node Node, blockList []Address) {
+	// seems to be handling duplicates by replacing it?
 	if old, ok := s.nodes[address]; ok {
 		s.nodeHash -= old.Hash()
 	} else {
@@ -59,6 +61,7 @@ func (s *State) UpdateNode(address Address, node Node) {
 	if old, ok := s.nodes[address]; ok {
 		s.nodeHash -= old.Hash()
 	} else {
+		log.Printf("node does not exist")
 		panic("node does not exist")
 	}
 
@@ -184,9 +187,29 @@ func (s *State) isMessageReachable(index int) (bool, *State) {
 	return true, nil
 }
 
+// Three cases: 1) local call 2) message arrives normally, 3) message arrives duplicated
+// Returns: array of states
+// handle message and send back a response message into the network
+// handling a message may result in more than one state
 func (s *State) HandleMessage(index int, deleteMessage bool) (result []*State) {
-	//TODO: implement it
-	panic("implement me")
+	message := s.Network[index]       // get message
+	to := message.To()                // node this message is sending to
+	var newStates = make([]*State, 0) // list of new states
+	// collect all possible nodes that may be created from this message
+	oldNode := s.nodes[to]
+	// derive new nodes form old node
+	newNodes := oldNode.MessageHandler(message) // cap:3
+	for _, newNode := range newNodes {          // handle each new node
+		newState := s.Inherit(HandleEvent(message)) // generate new state
+		if deleteMessage {                          // if delete == true
+			newState.DeleteMessage(index)
+		}
+		newState.UpdateNode(to, newNode)
+		newStates = append(newStates, newState)
+	}
+
+	//log.Printf("HandleMessage: newStates=%v", newStates)
+	return newStates
 }
 
 func (s *State) DeleteMessage(index int) {
@@ -212,8 +235,10 @@ func (s *State) NextStates() []*State {
 	nextStates := make([]*State, 0, 4)
 
 	for i := range s.Network {
+		// i == Message[i]
+
 		// check if it is a local call
-		if s.isLocalCall(i) {
+		if s.isLocalCall(i) { // isLocalCall checks from == true
 			newStates := s.HandleMessage(i, true)
 			nextStates = append(nextStates, newStates...)
 			continue
@@ -226,38 +251,63 @@ func (s *State) NextStates() []*State {
 			continue
 		}
 
+		// If case (a) or (b) does not occur (ie. no call + partition)
+		// then the arrival of a message should create at least 3 new states
 		// TODO: Drop off a message
+		// A message is dropped during transmission
 		if s.isDropOff {
+			//log.Printf("NextStates: drop off")
+			message := s.Network[i]
+			newStateDO := s.Inherit(DropOffEvent(message))
+			newStateDO.DeleteMessage(i)                 // delete message
+			nextStates = append(nextStates, newStateDO) // append new State
 		}
 
 		// TODO: Message arrives Normally. (use HandleMessage)
 
+		//log.Printf("NextStates: message arrives normally")
+		newStates := s.HandleMessage(i, true)
+		nextStates = append(nextStates, newStates...) // append new State
+
 		// TODO: Message arrives but the message is duplicated. The same message may come later again
 		// (use HandleMessage)
 		if s.isDuplicate {
-
+			//log.Printf("NextStates: duplicate")
+			newStatesDup := s.HandleMessage(i, false)        // don't delete message
+			nextStates = append(nextStates, newStatesDup...) // append new State
 		}
 
 	}
 
 	// You must iterate through the addresses, because every iteration on map is random...
 	// Weird feature in Go
-	for _, address := range s.addresses {
+	for _, address := range s.addresses { // iterate every node and trigger their next timer
 		node := s.nodes[address]
-
 		//TODO: call the timer (use TriggerNodeTimer)
+		nextStates = append(nextStates, s.TriggerNodeTimer(address, node)...)
 	}
 
 	return nextStates
 }
 
 func (s *State) TriggerNodeTimer(address Address, node Node) []*State {
-	//TODO: implement it
-	panic("implement me")
-
+	// TODO: implement it
+	// every timer should lead to a new state;
+	// (if N nodes with timers, generate n new states in parallel)
+	newStates := make([]*State, 0)
+	newNodes := node.TriggerTimer() // Trigger the next timer and return a list of new nodes.
+	for _, newNode := range newNodes {
+		newState := s.Inherit(TriggerEvent(address, node.NextTimer()))
+		newState.UpdateNode(address, newNode)
+		newStates = append(newStates, newState)
+	}
+	return newStates
 }
 
 func (s *State) RandomNextState() *State {
+	// Randomly returns 1 single state out of all possible next-states
+	// Still need to consider all possible transitions
+
 	timerAddresses := make([]Address, 0, len(s.nodes))
 	for addr, node := range s.nodes {
 		if IsNil(node.NextTimer()) {
@@ -265,23 +315,32 @@ func (s *State) RandomNextState() *State {
 		}
 		timerAddresses = append(timerAddresses, addr)
 	}
-
+	// handle empty event
+	// Ref: https://edstem.org/us/courses/19078/discussion/1459780
+	if len(s.Network) == 0 && len(timerAddresses) == 0 {
+		// empty event
+		return s.Inherit(EmptyEvent())
+	}
 	roll := rand.Intn(len(s.Network) + len(timerAddresses))
 
 	if roll < len(s.Network) {
 		// check Network Partition
-		reachable, newState := s.isMessageReachable(roll)
+		reachable, newState := s.isMessageReachable(roll) // roll == index
 		if !reachable {
 			return newState
 		}
 
-		//TODO: handle message and return one state
+		// TODO: handle message and return one state
+		// still need to consider all possible states;
+		nextStates := s.HandleMessage(roll, true)
+		return nextStates[0] // return that roll
 	}
 
 	// TODO: trigger timer and return one state
 	address := timerAddresses[roll-len(s.Network)]
 	node := s.nodes[address]
-
+	states := s.TriggerNodeTimer(address, node)
+	return states[0]
 }
 
 // Calculate the hash function of a State based on its nodeHash and networkHash.
