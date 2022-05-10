@@ -199,19 +199,18 @@ func (server *Server) MessageHandler(message base.Message) []base.Node {
 							newNode.proposer.Responses[i] = true
 							newNode.proposer.SuccessCount++
 						}
-						//else {
-						//	req := &ProposeRequest{
-						//		CoreMessage: base.MakeCoreMessage(newNode.Address(), newNode.peers[i]),
-						//		N:           newNode.proposer.N,
-						//		SessionId:   newNode.proposer.SessionId}
-						//	responses = append(responses, req)
-						//}
 					}
 
 					//newNode.SetResponse(responses)
 					newNodes = append(newNodes, newNode)
 				}
-			} // else timeout, then backoff and restart Paxos
+			} else {
+				// just increment ResponseCount
+				newNode := server.copy()
+				newNode.proposer.Phase = Propose
+				newNode.proposer.ResponseCount++
+				newNodes = append(newNodes, newNode)
+			}
 		}
 
 	case *AcceptResponse: // handle AcceptResponse
@@ -247,13 +246,12 @@ func (server *Server) MessageHandler(message base.Message) []base.Node {
 					newNode.proposer.Responses = make([]bool, len(newNode.peers))
 					newNodes = append(newNodes, newNode)
 				}
-				// second scenario: waiting for rest of the responses
-				if server.proposer.ResponseCount+1 < len(server.peers) && successCount < len(server.peers) {
+
+				// Scenario 2: waiting for rest of the responses
+				if server.proposer.ResponseCount+1 < len(server.peers) {
 					newNode := server.copy()
 					newNode.proposer.Phase = Accept
 					newNode.proposer.ResponseCount++
-					newNode.agreedValue = newNode.proposer.V // setting this doesn't hurt unit_tests
-					//responses := make([]base.Message, 0)
 					for i := 0; i < len(newNode.peers); i++ {
 						if msg.From() == newNode.peers[i] && newNode.proposer.Responses[i] == false {
 							// majority received, still waiting for others
@@ -261,19 +259,17 @@ func (server *Server) MessageHandler(message base.Message) []base.Node {
 							newNode.proposer.Responses[i] = true
 							newNode.proposer.SuccessCount++
 						}
-						//else {
-						//	response := &AcceptRequest{
-						//		CoreMessage: base.MakeCoreMessage(newNode.Address(), newNode.peers[i]),
-						//		N:           server.proposer.N,
-						//		V:           newNode.proposer.V,
-						//		SessionId:   msg.SessionId} // choose V; highest-numbered proposal among those returned
-						//	responses = append(responses, response)
-						//}
 					}
-					//newNode.SetResponse(responses)
 					newNodes = append(newNodes, newNode)
 				}
+			} else {
+				// if ACCEPT reject - just increment response count
+				newNode := server.copy()
+				newNode.proposer.Phase = Accept
+				newNode.proposer.ResponseCount++
+				newNodes = append(newNodes, newNode)
 			}
+
 		}
 	}
 	return newNodes

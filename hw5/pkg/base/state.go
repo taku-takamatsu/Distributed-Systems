@@ -200,9 +200,12 @@ func (s *State) HandleMessage(index int, deleteMessage bool) (result []*State) {
 	newNodes := oldNode.MessageHandler(message)   // cap:3
 	newStates := make([]*State, 0, len(newNodes)) // list of new states
 	for _, newNode := range newNodes {            // handle each new node
-		newState := s.Inherit(HandleEvent(message)) // generate new state
-		if deleteMessage {                          // if delete == true
+		var newState *State
+		if deleteMessage { // if delete == true
+			newState = s.Inherit(HandleEvent(message)) // generate new state
 			newState.DeleteMessage(index)
+		} else {
+			newState = s.Inherit(HandleDuplicateEvent(message)) // generate new state
 		}
 		newState.UpdateNode(to, newNode)
 		newStates = append(newStates, newState)
