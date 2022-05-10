@@ -192,14 +192,14 @@ func (s *State) isMessageReachable(index int) (bool, *State) {
 // handle message and send back a response message into the network
 // handling a message may result in more than one state
 func (s *State) HandleMessage(index int, deleteMessage bool) (result []*State) {
-	message := s.Network[index]       // get message
-	to := message.To()                // node this message is sending to
-	var newStates = make([]*State, 0) // list of new states
+	message := s.Network[index] // get message
+	to := message.To()          // node this message is sending to
 	// collect all possible nodes that may be created from this message
 	oldNode := s.nodes[to]
-	// derive new nodes form old node
-	newNodes := oldNode.MessageHandler(message) // cap:3
-	for _, newNode := range newNodes {          // handle each new node
+	// derive new nodes from old node
+	newNodes := oldNode.MessageHandler(message)   // cap:3
+	newStates := make([]*State, 0, len(newNodes)) // list of new states
+	for _, newNode := range newNodes {            // handle each new node
 		newState := s.Inherit(HandleEvent(message)) // generate new state
 		if deleteMessage {                          // if delete == true
 			newState.DeleteMessage(index)
@@ -284,7 +284,8 @@ func (s *State) NextStates() []*State {
 	for _, address := range s.addresses { // iterate every node and trigger their next timer
 		node := s.nodes[address]
 		//TODO: call the timer (use TriggerNodeTimer)
-		nextStates = append(nextStates, s.TriggerNodeTimer(address, node)...)
+		newStates := s.TriggerNodeTimer(address, node)
+		nextStates = append(nextStates, newStates...)
 	}
 
 	return nextStates
@@ -294,8 +295,8 @@ func (s *State) TriggerNodeTimer(address Address, node Node) []*State {
 	// TODO: implement it
 	// every timer should lead to a new state;
 	// (if N nodes with timers, generate n new states in parallel)
-	newStates := make([]*State, 0)
 	newNodes := node.TriggerTimer() // Trigger the next timer and return a list of new nodes.
+	newStates := make([]*State, 0, len(newNodes))
 	for _, newNode := range newNodes {
 		newState := s.Inherit(TriggerEvent(address, node.NextTimer()))
 		newState.UpdateNode(address, newNode)
@@ -333,6 +334,9 @@ func (s *State) RandomNextState() *State {
 		// TODO: handle message and return one state
 		// still need to consider all possible states;
 		nextStates := s.HandleMessage(roll, true)
+		if len(nextStates) == 0 {
+			return s.Inherit(EmptyEvent())
+		}
 		return nextStates[0] // return that roll
 	}
 
@@ -340,6 +344,9 @@ func (s *State) RandomNextState() *State {
 	address := timerAddresses[roll-len(s.Network)]
 	node := s.nodes[address]
 	states := s.TriggerNodeTimer(address, node)
+	if len(states) == 0 {
+		return s.Inherit(EmptyEvent())
+	}
 	return states[0]
 }
 
