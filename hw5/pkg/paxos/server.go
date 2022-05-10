@@ -83,7 +83,7 @@ func (server *Server) MessageHandler(message base.Message) []base.Node {
 			newNode.n_p = msg.N
 			response := &ProposeResponse{
 				CoreMessage: base.MakeCoreMessage(message.To(), message.From()),
-				Ok:          true, N_p: newNode.n_p, V_a: newNode.v_a,
+				Ok:          true, N_a: newNode.n_a, V_a: newNode.v_a, N_p: newNode.n_p,
 				SessionId: msg.SessionId}
 			newNode.SetSingleResponse(response)
 			//newNode.proposer.SessionId = msg.SessionId
@@ -129,6 +129,8 @@ func (server *Server) MessageHandler(message base.Message) []base.Node {
 		msg := message.(*DecideRequest)
 		newNode := server.copy()
 		newNode.agreedValue = msg.V
+		newNode.v_a = msg.V
+		newNode.n_a = newNode.proposer.N
 		newNodes = append(newNodes, newNode)
 
 	case *ProposeResponse:
@@ -151,16 +153,16 @@ func (server *Server) MessageHandler(message base.Message) []base.Node {
 					// Scenario 1: majority reached
 					newNode := server.copy()
 					newNode.proposer.Phase = Accept
+
+					// choose V; value of highest-numbered proposal among those returned
+					if base.IsNil(msg.V_a) && base.IsNil(newNode.proposer.V) {
+						newNode.proposer.V = newNode.proposer.InitialValue
+					} else if !base.IsNil(msg.V_a) && msg.N_a > newNode.proposer.N_a_max {
+						newNode.proposer.N_a_max = msg.N_a
+						newNode.proposer.V = msg.V_a
+					}
+
 					responses := make([]base.Message, 0)
-
-					//// choose V; value of highest-numbered proposal among those returned
-					//if base.IsNil(msg.V_a) && base.IsNil(newNode.proposer.V) {
-					//	newNode.proposer.V = newNode.proposer.InitialValue
-					//} else if msg.N_p > newNode.proposer.N_a_max {
-					//	newNode.proposer.N_a_max = msg.N_p
-					//	newNode.proposer.V = msg.V_a
-					//}
-
 					for _, peer := range newNode.peers {
 						response := &AcceptRequest{
 							CoreMessage: base.MakeCoreMessage(newNode.Address(), peer),
@@ -177,10 +179,18 @@ func (server *Server) MessageHandler(message base.Message) []base.Node {
 					newNodes = append(newNodes, newNode)
 				}
 				// Scenario 2: If successCount not majority or haven't received all responses
-				if server.proposer.ResponseCount+1 < len(server.peers) {
+				if server.proposer.ResponseCount+1 < len(server.peers) && successCount < len(server.peers) {
 					newNode := server.copy()
 					newNode.proposer.Phase = Propose
 					newNode.proposer.ResponseCount++
+
+					// choose V; value of highest-numbered proposal among those returned
+					if base.IsNil(msg.V_a) && base.IsNil(newNode.proposer.V) {
+						newNode.proposer.V = newNode.proposer.InitialValue
+					} else if !base.IsNil(msg.V_a) && msg.N_a > newNode.proposer.N_a_max {
+						newNode.proposer.N_a_max = msg.N_a
+						newNode.proposer.V = msg.V_a
+					}
 
 					//responses := make([]base.Message, 0)
 					for i := 0; i < len(newNode.peers); i++ {
@@ -238,11 +248,11 @@ func (server *Server) MessageHandler(message base.Message) []base.Node {
 					newNodes = append(newNodes, newNode)
 				}
 				// second scenario: waiting for rest of the responses
-				if server.proposer.ResponseCount+1 < len(server.peers) {
+				if server.proposer.ResponseCount+1 < len(server.peers) && successCount < len(server.peers) {
 					newNode := server.copy()
 					newNode.proposer.Phase = Accept
 					newNode.proposer.ResponseCount++
-
+					newNode.agreedValue = newNode.proposer.V // setting this doesn't hurt unit_tests
 					//responses := make([]base.Message, 0)
 					for i := 0; i < len(newNode.peers); i++ {
 						if msg.From() == newNode.peers[i] && newNode.proposer.Responses[i] == false {
@@ -277,8 +287,12 @@ func (server *Server) StartPropose() {
 	server.proposer.N++
 	server.proposer.SessionId++
 	server.proposer.Phase = Propose
-	server.proposer.V = server.proposer.InitialValue
-
+	if base.IsNil(server.v_a) && base.IsNil(server.proposer.V) {
+		server.proposer.V = server.proposer.InitialValue
+	}
+	server.proposer.SuccessCount = 0
+	server.proposer.ResponseCount = 0
+	server.proposer.Responses = make([]bool, len(server.peers))
 	// then send ProposeRequest to all of it's peers
 
 	responses := make([]base.Message, 0)
