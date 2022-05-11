@@ -236,6 +236,7 @@ func concurrentProposer1() []func(s *base.State) bool {
 		}
 		return valid
 	}
+
 	p3PreparePhase := func(s *base.State) bool {
 		s3 := s.Nodes()["s3"].(*Server)
 		s1 := s.Nodes()["s1"].(*Server)
@@ -279,6 +280,31 @@ func concurrentProposer1() []func(s *base.State) bool {
 
 // Fill in the function to lead the program continue  P3's proposal  and reaches consensus at the value of "v3".
 func concurrentProposer2() []func(s *base.State) bool {
+	p3PreparePhase := func(s *base.State) bool {
+		s3 := s.Nodes()["s3"].(*Server)
+		s1 := s.Nodes()["s1"].(*Server)
+		valid := s3.proposer.Phase == Propose && s1.proposer.Phase == Accept
+		if valid {
+			fmt.Println("... p3 entered Propose phase")
+		}
+		return valid
+	}
+	p3ReceiveProposeResponse := func(s *base.State) bool {
+		s3 := s.Nodes()["s3"].(*Server)
+		valid := s3.proposer.SuccessCount == 1
+		if valid {
+			fmt.Println("... p3 received 1 Propose response")
+		}
+		return valid
+	}
+	p3ReceiveProposeResponse2 := func(s *base.State) bool {
+		s3 := s.Nodes()["s3"].(*Server)
+		valid := s3.proposer.SuccessCount == 2
+		if valid {
+			fmt.Println("... p3 received 2 Propose response")
+		}
+		return valid
+	}
 	p3AcceptPhase := func(s *base.State) bool {
 		s3 := s.Nodes()["s3"].(*Server)
 		valid := s3.proposer.Phase == Accept
@@ -305,6 +331,9 @@ func concurrentProposer2() []func(s *base.State) bool {
 	}
 
 	return []func(s *base.State) bool{
+		p3PreparePhase,
+		p3ReceiveProposeResponse,
+		p3ReceiveProposeResponse2,
 		p3AcceptPhase,
 		p3ReceiveAcceptOk,
 		p3ReceiveAcceptOk2}

@@ -267,7 +267,6 @@ func (s *State) NextStates() []*State {
 		}
 
 		// TODO: Message arrives Normally. (use HandleMessage)
-
 		//log.Printf("NextStates: message arrives normally")
 		newStates := s.HandleMessage(i, true)
 		nextStates = append(nextStates, newStates...) // append new State
