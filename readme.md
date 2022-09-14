@@ -1,7 +1,8 @@
-# 4113 Assignments
-* [Assignment 0: Collaboration Policy](instructions/Assignment0.md)
-* [Assignment 1: MapReduce](instructions/Assignment1.md)
-* [Assignment 2: Primary-Backup Key/Value Service](instructions/Assignment2.md)
-* [Assignment 3: Paxos-based Key/Value Service](instructions/Assignment3.md)
-* [Assignment 4: Sharded Key/Value Service](instructions/Assignment4.md)
-* [Assignment 5: Model Checking Paxos](instructions/Assignment5.md)
+# Distributed Systems
+Implementation for Distributed Systems course assignments/labs. Taken from MIT's [6.824](https://pdos.csail.mit.edu/6.824/) and Columbia's [COMS 4113](https://systems.cs.columbia.edu/ds1-class/).
+
+* [MapReduce](instructions/Assignment1.md)
+* [Primary-Backup Key/Value Service](instructions/Assignment2.md)
+* [Paxos-based Key/Value Service](instructions/Assignment3.md)
+* [Sharded Key/Value Service](instructions/Assignment4.md)
+* [Model Checking Paxos](instructions/Assignment5.md)
